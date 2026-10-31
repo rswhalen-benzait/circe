@@ -13,7 +13,8 @@ final class RFBClient: @unchecked Sendable {
         /// The server can resize its desktop on request (ExtendedDesktopSize).
         case canResizeDesktop
         case resized(width: Int, height: Int)
-        case frameUpdated(RFBFramebuffer)
+        /// `coverage`: fraction of the framebuffer this update repainted (0…1).
+        case frameUpdated(RFBFramebuffer, coverage: Double)
         case cursor(RFBCursor)
         case clipboard(String)
         case bell
@@ -356,11 +357,13 @@ final class RFBClient: @unchecked Sendable {
         defer { fb?.unlock() }
         // 0xFFFF = unknown count; the server ends with a LastRect pseudo-rectangle.
         var remaining = rects == 0xFFFF ? Int.max : rects
+        var painted = 0
         rectLoop: while remaining > 0 {
             remaining -= 1
             let x = Int(try stream.u16()), y = Int(try stream.u16())
             let w = Int(try stream.u16()), h = Int(try stream.u16())
             let enc = try stream.i32()
+            if enc >= 0 { painted += w * h } // real pixels, not pseudo-encodings
             guard let fb else { break }
             switch enc {
             case 7: try decodeTight(fb, x, y, w, h)
@@ -406,7 +409,7 @@ final class RFBClient: @unchecked Sendable {
                 throw RFBError.protocolError("unsupported encoding \(enc)")
             }
         }
-        if let fb { onEvent(.frameUpdated(fb)) }
+        if let fb { onEvent(.frameUpdated(fb, coverage: Double(painted) / Double(max(fb.width * fb.height, 1)))) }
         if resized && continuousUpdates { enableContinuousUpdates() }
         requestUpdate(incremental: !resized)
     }

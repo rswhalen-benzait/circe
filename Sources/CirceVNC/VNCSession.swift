@@ -235,12 +235,14 @@ public final class VNCSession: ObservableObject, Identifiable {
             displayView.framebufferSize = CGSize(width: w, height: h)
             stats.resolution = "\(w)×\(h)"
             restartVideo() // the encoder captures a fixed size
-        case .frameUpdated(let fb):
+        case let .frameUpdated(fb, coverage):
             fpsMeter.add()
             if video != nil { vncUpdatesDuringVideo += 1 }
             lastFramebuffer = fb
             displayView.show(fb)
-            if video == nil { displayView.setVideoLayer(nil) } // VNC pixels are current again
+            // Video stopped: keep its last image until VNC has repainted (most of) the screen,
+            // not just a cursor-sized update that was already in flight.
+            if video == nil, displayView.videoLayer != nil, coverage >= 0.9 { displayView.setVideoLayer(nil) }
         case .cursor(let c):
             displayView.setCursor(c)
         case .clipboard(let text):
@@ -476,10 +478,16 @@ public final class VNCSession: ObservableObject, Identifiable {
         video = nil
         if videoMode != .vnc { videoMode = .vnc }
         guard wasShowing else { return }
+        stats.codec = tunnel.isTunneled ? "VNC · Tight" : "VNC"
         // Keep the last video image up until VNC has sent a fresh full frame (see .frameUpdated).
         client?.setPixelsSuppressed(false)
-        if client == nil { displayView.setVideoLayer(nil) }
-        stats.codec = tunnel.isTunneled ? "VNC · Tight" : "VNC"
+        if client == nil { displayView.setVideoLayer(nil); return }
+        // Servers may send the refresh as several updates; don't leave a frozen video image regardless.
+        let layer = displayView.videoLayer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.video == nil, self.displayView.videoLayer === layer else { return }
+            self.displayView.setVideoLayer(nil)
+        }
     }
 
     private func finish(_ reason: String?) {

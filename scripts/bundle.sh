@@ -9,6 +9,7 @@ BUNDLE_IDENTIFIER="${CIRCE_BUNDLE_IDENTIFIER:-com.circe.desktop}"
 SIGNING_IDENTITY="${CIRCE_SIGNING_IDENTITY:--}"
 BUILD_ROOT="$PROJECT_ROOT/build"
 mkdir -p "$BUILD_ROOT"
+/usr/bin/python3 scripts/linux/embed-video-wrapper.py --check
 
 if [[ ! -f Resources/Circe.icns || scripts/generate-icon.swift -nt Resources/Circe.icns ]]; then
     xcrun swift scripts/generate-icon.swift "$PROJECT_ROOT/Resources"
@@ -24,6 +25,7 @@ cp "$BINARY_DIRECTORY/Circe" "$APP/Contents/MacOS/Circe"
 cp Resources/Circe.icns "$APP/Contents/Resources/Circe.icns"
 mkdir -p "$APP/Contents/Resources/Linux"
 cp scripts/linux/setup-circe-host.sh "$APP/Contents/Resources/Linux/setup-circe-host.sh"
+cp scripts/linux/circe-video.sh "$APP/Contents/Resources/Linux/video"
 # SwiftPM resource bundles are siblings of the executable, when targets use resources.
 shopt -s nullglob
 for RESOURCE_BUNDLE in "$BINARY_DIRECTORY"/*.bundle; do
