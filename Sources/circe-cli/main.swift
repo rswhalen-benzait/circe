@@ -154,6 +154,7 @@ func runVNC() {
             if session.state != lastState {
                 lastState = session.state
                 log("state: \(session.state)")
+                if case .reconnecting = session.state { log("dropped: \(session.lastCloseReason ?? "-")") }
                 if case .authenticating = session.state {
                     guard let pw = value("--password") else { log("server requires credentials (username needed: \(session.needsUsername))"); exit(3) }
                     session.submitPassword(username: value("--user") ?? NSUserName(), password: pw)
@@ -188,6 +189,9 @@ func runVNC() {
                 bad += 1; log("clipboard: got \(session.lastRemoteClipboard ?? "nil")")
             }
             if args.contains("--expect-audio"), !session.audioActive { bad += 1; log("audio: not playing") }
+            if let minFPS = value("--min-fps").flatMap(Double.init), session.stats.fps < minFPS {
+                bad += 1; log("fps \(session.stats.fps) < \(minFPS)")
+            }
             log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ mismatches=%d", session.stats.codec,
                        session.stats.transport, session.stats.resolution, session.stats.fps,
                        session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", bad))

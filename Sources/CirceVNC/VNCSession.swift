@@ -171,6 +171,8 @@ public final class VNCSession: ObservableObject, Identifiable {
     private var lastFramebuffer: RFBFramebuffer?
     /// Most recent clipboard text received from the server (diagnostics / tests).
     public private(set) var lastRemoteClipboard: String?
+    /// Why the connection last dropped (shown while reconnecting; diagnostics).
+    @Published public private(set) var lastCloseReason: String?
 
     private func requestFit() {
         guard fitsRemoteDesktopToWindow, canResizeDesktop, state == .streaming, displayView.window != nil else { return }
@@ -217,6 +219,7 @@ public final class VNCSession: ObservableObject, Identifiable {
             NSSound.beep()
         case .closed(let reason):
             guard !userClosed else { return }
+            lastCloseReason = reason
             let authFailure: Bool = {
                 if case .authenticating = state { return true }
                 return reason?.hasPrefix("Authentication failed") == true || reason == "Incorrect name or password."

@@ -27,6 +27,8 @@ check "ssh + VeNCrypt Plain + Tight + resize + clipboard + audio" "mismatches=0"
   --expect-clipboard "Grüße from Linux ✓" --expect-audio $(head -1 "$TMP/plain.out")
 check "ssh + VeNCrypt VncAuth" "mismatches=0" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 1 --tolerance 6 --expect-audio $(head -1 "$TMP/vnc.out")
+check "continuous updates stream without requests (fps>10)" "mismatches=0" \
+  $CLI vnc --ssh t@vm --display 22 --password x --seconds 3 --min-fps 10
 check "wrong password is reported" "Authentication failed" $CLI vnc --ssh t@vm --display 21 --user circe --password nope
 check "ssh key refused is explained" "SSH refused the login" env FAKE_SSH_FAIL="Permission denied (publickey)." $CLI vnc --ssh t@vm --display 21
 check "missing VNC server is explained" "no VNC server is running" $CLI vnc --ssh t@vm --display 49

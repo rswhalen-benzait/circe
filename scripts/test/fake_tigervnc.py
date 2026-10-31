@@ -114,11 +114,22 @@ def serve():
             session(c)
         except (EOFError, ConnectionError, OSError):
             pass
+        except Exception:
+            import traceback; traceback.print_exc()
         finally:
             c.close()
 
+class Locked:
+    """Serialises writes: the push thread and the request handler share one socket."""
+    def __init__(self, sock): self.sock, self.lock = sock, threading.Lock()
+    def sendall(self, b):
+        with self.lock: self.sock.sendall(b)
+    def recv(self, n): return self.sock.recv(n)
+
 def session(c):
-    global W, H
+    global W, H, streams
+    c = Locked(c)
+    streams = [zlib.compressobj() for _ in range(4)]  # zlib state is per connection, like a real server
     c.sendall(b"RFB 003.008\n"); recv_exact(c, 12)
     c.sendall(bytes([1, 19])); assert recv_exact(c, 1)[0] == 19
     c.sendall(bytes([0, 2])); recv_exact(c, 2); c.sendall(bytes([0]))
@@ -139,6 +150,18 @@ def session(c):
     name = b"Fake TigerVNC (Linux)"
     c.sendall(struct.pack(">HH", W, H) + bytes(16) + struct.pack(">I", len(name)) + name)
     sent_first = False
+    cu = {"on": False}
+    def pusher():  # continuous updates: push a changing pixel every 50 ms without being asked
+        n = 0
+        while True:
+            threading.Event().wait(0.05)
+            if not cu["on"]: continue
+            n += 1
+            try:
+                c.sendall(bytes([0, 0]) + struct.pack(">H", 1) + rect(W - 1, H - 1, 1, 1, 7) + bytes([0x80]) + rgb(n * 1234567 & 0xFFFFFF))
+            except OSError:
+                return
+    threading.Thread(target=pusher, daemon=True).start()
     while True:
         t = recv_exact(c, 1)[0]
         if t == 0: recv_exact(c, 19)
@@ -146,10 +169,12 @@ def session(c):
             n = struct.unpack(">xH", recv_exact(c, 3))[0]; recv_exact(c, 4 * n)
         elif t == 3:
             incremental = recv_exact(c, 9)[0]
+            if cu["on"] and incremental: cu["stray_requests"] = cu.get("stray_requests", 0) + 1
             if not incremental:  # like a real server: full refresh on request (e.g. after a resize)
                 c.sendall(build_update())
             if not sent_first:
                 sent_first = True
+                c.sendall(bytes([150]))  # EndOfContinuousUpdates: "I support them"
                 c.sendall(ext_clip(CAPS | TEXT | REQ | PEEK | NOTIFY | PROVIDE, struct.pack(">I", 1 << 20)))
         elif t == 4: recv_exact(c, 7)
         elif t == 5: recv_exact(c, 5)
@@ -163,6 +188,12 @@ def session(c):
                 elif flags & REQ:
                     raw = CLIP_TEXT.encode() + b"\0"
                     c.sendall(ext_clip(PROVIDE | TEXT, zlib.compress(struct.pack(">I", len(raw)) + raw)))
+        elif t == 150:
+            enable = recv_exact(c, 9)[0]; cu["on"] = bool(enable)
+            c.sendall(bytes([248, 0, 0, 0]) + struct.pack(">I", (1 << 31) | 0b11) + bytes([2]) + b"hi")  # fence request
+        elif t == 248:
+            recv_exact(c, 3); recv_exact(c, 4); ln = recv_exact(c, 1)[0]; recv_exact(c, ln)
+            cu["fenced"] = True
         elif t == 251:
             recv_exact(c, 1); w, h, n = struct.unpack(">HHB", recv_exact(c, 5)); recv_exact(c, 1 + 16 * n)
             W, H = w, h

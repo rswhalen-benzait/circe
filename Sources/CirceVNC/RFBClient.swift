@@ -40,6 +40,10 @@ final class RFBClient: @unchecked Sendable {
     private var screenID: UInt32 = 0
     private var screenFlags: UInt32 = 0
 
+    // Continuous updates: the server pushes frames instead of waiting for a request each time,
+    // removing one network round trip per frame (big over the internet).
+    private var continuousUpdates = false
+
     // Extended clipboard (UTF-8)
     private var extendedClipboard = false
     private let clipLock = NSLock()
@@ -232,6 +236,7 @@ final class RFBClient: @unchecked Sendable {
         var encodings: [Int32] = wan ? [7 /*Tight*/, 16 /*ZRLE*/] : [16, 7]
         encodings += [5 /*Hextile*/, 1 /*CopyRect*/, 0 /*Raw*/,
                       -223 /*DesktopSize*/, -308 /*ExtendedDesktopSize*/, -239 /*Cursor*/, -224 /*LastRect*/,
+                      -313 /*ContinuousUpdates*/, -312 /*Fence*/,
                       Self.extendedClipboardEncoding]
         if wan {
             encodings += [-32 + 8 /*JPEG quality 8*/, -256 + 2 /*compression level 2*/]
@@ -251,6 +256,7 @@ final class RFBClient: @unchecked Sendable {
 
     func requestUpdate(incremental: Bool) {
         guard let fb else { return }
+        if continuousUpdates && incremental { return } // the server streams on its own
         var d = Data([3, incremental ? 1 : 0])
         d += be16(0) + be16(0) + be16(UInt16(fb.width)) + be16(UInt16(fb.height))
         stream.write(d)
@@ -293,6 +299,11 @@ final class RFBClient: @unchecked Sendable {
                 let n = Int(try stream.u16())
                 try stream.skip(n * 6)
             case 2: onEvent(.bell)
+            case 150:
+                // EndOfContinuousUpdates: the server supports them. Turn them on (once).
+                if !continuousUpdates { enableContinuousUpdates() }
+            case 248:
+                try handleFence()
             case 3:
                 try stream.skip(3)
                 let len = try stream.i32()
@@ -369,6 +380,7 @@ final class RFBClient: @unchecked Sendable {
             }
         }
         if let fb { onEvent(.frameUpdated(fb)) }
+        if resized && continuousUpdates { enableContinuousUpdates() }
         requestUpdate(incremental: !resized)
     }
 
@@ -393,6 +405,29 @@ final class RFBClient: @unchecked Sendable {
             }
         }
         return RFBCursor(width: w, height: h, hotX: hx, hotY: hy, rgba: rgba)
+    }
+
+    // MARK: Continuous updates & fences
+
+    private func enableContinuousUpdates() {
+        guard let fb else { return }
+        continuousUpdates = true
+        var d = Data([150, 1])
+        d += be16(0) + be16(0) + be16(UInt16(fb.width)) + be16(UInt16(fb.height))
+        stream.write(d)
+    }
+
+    /// Fences keep ordering across the pipeline; answer requests with the flags we understand.
+    private func handleFence() throws {
+        try stream.skip(3)
+        let flags = try stream.u32()
+        let len = Int(try stream.u8())
+        let payload = try stream.read(min(len, 64))
+        guard flags & (1 << 31) != 0 else { return } // a response to us; nothing to do
+        let supported: UInt32 = 0b111 // BlockBefore | BlockAfter | SyncNext
+        var d = Data([248, 0, 0, 0])
+        d += be32(flags & supported) + Data([UInt8(payload.count)]) + payload
+        stream.write(d)
     }
 
     // MARK: Desktop size
