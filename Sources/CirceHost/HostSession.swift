@@ -309,6 +309,7 @@ final class HostSession: @unchecked Sendable {
         self.encoder = encoder
         self.synthetic = synth
         encoder.onFrame = { [weak self] frame in self?.queue.async { self?.sendVideo(frame) } }
+        encoder.onDrop = { [weak self] in self?.queue.async { self?.frameSent() } }
         synth.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
         conn.send(.streamStart(StreamStart(codec: encoder.codec, display: d, displays: [d],
                                            encodedWidth: d.pixelWidth, encodedHeight: d.pixelHeight, audio: nil,
@@ -341,6 +342,7 @@ final class HostSession: @unchecked Sendable {
         injector?.setDisplay(display.displayID)
 
         encoder.onFrame = { [weak self] frame in self?.queue.async { self?.sendVideo(frame) } }
+        encoder.onDrop = { [weak self] in self?.queue.async { self?.frameSent() } }
         capturer.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
         let audio = AudioPacketizer()
         capturer.onAudio = { [weak self] sb in

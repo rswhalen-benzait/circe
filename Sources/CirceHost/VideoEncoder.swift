@@ -15,6 +15,8 @@ final class VideoEncoder: @unchecked Sendable {
 
     /// Called on an encoder-owned thread for every encoded frame.
     var onFrame: ((VideoFrame) -> Void)?
+    /// Called when a submitted frame produced no output (dropped or failed), so callers can release its slot.
+    var onDrop: (() -> Void)?
 
     init?(width: Int, height: Int, fps: Int, bitrate: Int, preferred: [VideoCodec]) {
         self.width = width
@@ -77,22 +79,25 @@ final class VideoEncoder: @unchecked Sendable {
     func requestKeyframe() { lock.withLock { forceKeyframe = true } }
 
     func encode(_ pixelBuffer: CVPixelBuffer, captureMicros: UInt64) {
-        guard let session else { return }
+        guard let session else { onDrop?(); return }
         let key = lock.withLock { () -> Bool in let k = forceKeyframe; forceKeyframe = false; return k }
         let props: CFDictionary? = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         let pts = CMTime(value: CMTimeValue(captureMicros), timescale: 1_000_000)
         VTCompressionSessionEncodeFrame(session, imageBuffer: pixelBuffer, presentationTimeStamp: pts,
                                         duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] status, _, sample in
-            guard let self, status == noErr, let sample else {
-                if status != noErr { self?.requestKeyframe() }
+            guard let self else { return }
+            guard status == noErr, let sample, sample.dataBuffer != nil else {
+                if status != noErr { self.requestKeyframe() }
+                self.onDrop?()
                 return
             }
-            self.emit(sample, captureMicros: captureMicros)
+            if !self.emit(sample, captureMicros: captureMicros) { self.onDrop?() }
         }
     }
 
-    private func emit(_ sample: CMSampleBuffer, captureMicros: UInt64) {
-        guard let block = CMSampleBufferGetDataBuffer(sample) else { return }
+    @discardableResult
+    private func emit(_ sample: CMSampleBuffer, captureMicros: UInt64) -> Bool {
+        guard let block = CMSampleBufferGetDataBuffer(sample) else { return false }
         var isKey = true
         if let atts = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]],
            let first = atts.first, let notSync = first[kCMSampleAttachmentKey_NotSync] as? Bool {
@@ -105,7 +110,7 @@ final class VideoEncoder: @unchecked Sendable {
         var length = 0
         var ptr: UnsafeMutablePointer<CChar>?
         guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length,
-                                          dataPointerOut: &ptr) == noErr, let ptr else { return }
+                                          dataPointerOut: &ptr) == noErr, let ptr else { return false }
         let data: Data
         if CMBlockBufferIsRangeContiguous(block, atOffset: 0, length: length) {
             data = Data(bytes: ptr, count: length)
@@ -117,6 +122,7 @@ final class VideoEncoder: @unchecked Sendable {
         let n = lock.withLock { () -> UInt32 in frameNumber &+= 1; return frameNumber }
         onFrame?(VideoFrame(frameNumber: n, captureMicros: captureMicros,
                             flags: isKey ? VideoFrame.flagKeyframe : 0, parameterSets: params, data: data))
+        return true
     }
 
     static func parameterSets(_ fmt: CMFormatDescription, codec: VideoCodec) -> [Data] {
