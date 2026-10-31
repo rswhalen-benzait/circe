@@ -60,6 +60,13 @@ public final class CirceRuntime: ObservableObject {
             let config = StreamConfig(audioEnabled: model.preferences.audio)
             if let host, let found = discovered[host.id] {
                 engine = ClientSession(host: found, config: config)
+            } else if let host, let service = host.service {
+                let endpoint = NWEndpoint.service(name: service.name, type: service.type, domain: service.domain, interface: nil)
+                if host.transport == .vnc {
+                    connectVNC(VNCSession(endpoint: endpoint, name: host.name), presentation: presentation)
+                    return presentation
+                }
+                engine = ClientSession(endpoint: endpoint, name: host.name, config: config)
             } else {
                 let parsed = try ConnectionAddress(address)
                 let endpoint = NWEndpoint.hostPort(host: .init(parsed.host), port: .init(rawValue: parsed.port)!)
@@ -105,13 +112,26 @@ public final class CirceRuntime: ObservableObject {
     }
 
     private func publishHosts() {
-        let native = discovered.values.map { NearbyMac(id: $0.id, name: $0.name, model: $0.modelIdentifier, address: $0.endpoint.debugDescription) }
+        let native = discovered.values.map { nearbyMac(id: $0.id, name: $0.name, model: $0.modelIdentifier, endpoint: $0.endpoint, transport: .circe) }
         let nativeNames = Set(native.map { $0.name.lowercased() })
         let compatibility = screenSharingHosts.compactMap { id, host -> NearbyMac? in
             guard !nativeNames.contains(host.name.lowercased()) else { return nil }
-            return NearbyMac(id: id, name: host.name, model: "Mac", address: host.endpoint.debugDescription, transport: .vnc)
+            return nearbyMac(id: id, name: host.name, model: "Mac", endpoint: host.endpoint, transport: .vnc)
         }
         model.hosts = (native + compatibility).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func nearbyMac(id: String, name: String, model: String, endpoint: NWEndpoint, transport: HostTransport) -> NearbyMac {
+        if case let .service(serviceName, type, domain, _) = endpoint {
+            let service = BonjourServiceAddress(name: serviceName, type: type, domain: domain)
+            return NearbyMac(id: id, name: name, model: model, address: service.displayAddress, transport: transport, service: service)
+        }
+        if case let .hostPort(host, port) = endpoint {
+            let hostname = "\(host)"
+            let address = "\(transport.rawValue)://\(hostname.contains(":") ? "[\(hostname)]" : hostname):\(port.rawValue)"
+            return NearbyMac(id: id, name: name, model: model, address: address, transport: transport)
+        }
+        return NearbyMac(id: id, name: name, model: model, address: endpoint.debugDescription, transport: transport)
     }
 
     private func attachHosting() {

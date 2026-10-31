@@ -17,6 +17,7 @@ public struct LauncherView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     introduction
                     nearby
+                    recents
                     manualConnection
                 }.padding(.horizontal, 32).padding(.top, 20).padding(.bottom, 30)
             }.scrollIndicators(.hidden)
@@ -86,6 +87,38 @@ public struct LauncherView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
                     ForEach(model.hosts) { host in
                         HostCard(host: host) { connect(model.connect(to: host)) }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var recents: some View {
+        if !model.recentConnections.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    SectionEyebrow(title: "Recent connections")
+                    Spacer()
+                    Button("Clear") { model.clearRecents() }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
+                }
+                VStack(spacing: 7) {
+                    ForEach(model.recentConnections) { recent in
+                        Button { connect(model.connect(to: recent)) } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: recent.nearbyHost?.symbol ?? "clock.arrow.circlepath")
+                                    .font(.system(size: 20, weight: .light)).foregroundStyle(CirceStyle.violet).frame(width: 29)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(recent.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                                    Text(recent.detail).font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk).lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.up.right").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
+                            }.padding(.horizontal, 15).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.white.opacity(0.75), in: RoundedRectangle(cornerRadius: 11))
+                                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(CirceStyle.line))
+                                .contentShape(RoundedRectangle(cornerRadius: 11))
+                        }.buttonStyle(.plain).accessibilityLabel("Reconnect to \(recent.name)")
+                            .contextMenu { Button("Remove from recents") { model.removeRecent(recent.id) } }
                     }
                 }
             }

@@ -31,6 +31,38 @@ import Foundation
         precondition(session.scale == .fit && session.matchesWindowResolution)
         session.setScale(.actual)
         precondition(!session.matchesWindowResolution)
+        let history = RecentConnectionsStore(defaults: defaults)
+        history.record(host: nil, address: "vnc://user:secret@host", name: "Invalid")
+        precondition(history.connections.isEmpty, "History must never store credential-bearing input")
+        history.record(host: nil, address: "studio.local:5900", name: "Studio")
+        history.record(host: nil, address: "vnc://STUDIO.local:5900", name: "Studio updated")
+        precondition(history.connections.count == 1 && history.connections[0].transport == .vnc)
+        let service = BonjourServiceAddress(name: "Studio Mac", type: "_circe._tcp", domain: "local.")
+        let nearby = NearbyMac(id: "device-key", name: "Studio Mac", address: service.displayAddress, service: service)
+        history.record(host: nearby, address: nearby.address, name: nearby.name)
+        let restored = RecentConnectionsStore(defaults: defaults)
+        precondition(restored.connections[0].nearbyHost?.service == service, "Bonjour routes must survive relaunch")
+        for index in 0..<10 { history.record(host: nil, address: "mac\(index).local", name: "Mac \(index)") }
+        precondition(history.connections.count == RecentConnectionsStore.limit && history.connections[0].name == "Mac 9")
+        let historyModel = CirceModel(preferences: preferences)
+        historyModel.onConnect = { _, address in
+            let failed = RemoteSession(name: "Failed", address: address)
+            failed.phase = .disconnected("Unavailable")
+            return failed
+        }
+        let failed = historyModel.connect(address: "failed.local")
+        precondition(historyModel.recentConnections[0].name == "Mac 9", "Failed attempts must not replace recents")
+        historyModel.closeSession(failed.id)
+        historyModel.onConnect = { _, address in
+            let connected = RemoteSession(name: "Connected Mac", address: address)
+            connected.phase = .streaming
+            return connected
+        }
+        let connected = historyModel.connect(address: "connected.local")
+        precondition(historyModel.recentConnections[0].name == "Connected Mac")
+        historyModel.closeSession(connected.id)
+        historyModel.clearRecents()
+        precondition(RecentConnectionsStore(defaults: defaults).connections.isEmpty)
         let login = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEOpenApplication),
                                           targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
         login.setParam(NSAppleEventDescriptor(enumCode: keyAELaunchedAsLogInItem), forKeyword: AEKeyword(keyAEPropData))
@@ -41,6 +73,6 @@ import Foundation
         precondition(!CirceStartup.isQuietLaunch)
         CirceStartup.configure(sharingEnabled: true, event: login, arguments: [])
         precondition(CirceStartup.isQuietLaunch)
-        print("UI model checks passed: sharing persistence, quit semantics, login status, and quiet launch policy.")
+        print("UI model checks passed: sharing persistence, quit semantics, login status, display matching, recent connections, and quiet launch policy.")
     }
 }

@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-public enum HostTransport: String { case circe, vnc }
+public enum HostTransport: String, Codable { case circe, vnc }
 
 public struct NearbyMac: Identifiable, Equatable {
     public let id: String
@@ -10,6 +10,7 @@ public struct NearbyMac: Identifiable, Equatable {
     public var model: String
     public var address: String
     public var transport: HostTransport
+    public var service: BonjourServiceAddress?
     public var symbol: String {
         let model = model.lowercased()
         if model.contains("macbook") { return "laptopcomputer" }
@@ -17,8 +18,8 @@ public struct NearbyMac: Identifiable, Equatable {
         if model.contains("pro") && !model.contains("imac") { return "macpro.gen3" }
         return "desktopcomputer"
     }
-    public init(id: String, name: String, model: String = "Mac", address: String = "", transport: HostTransport = .circe) {
-        self.id = id; self.name = name; self.model = model; self.address = address; self.transport = transport
+    public init(id: String, name: String, model: String = "Mac", address: String = "", transport: HostTransport = .circe, service: BonjourServiceAddress? = nil) {
+        self.id = id; self.name = name; self.model = model; self.address = address; self.transport = transport; self.service = service
     }
 }
 
@@ -64,6 +65,7 @@ public final class CircePreferences: ObservableObject {
     @Published public var matchesWindowResolution: Bool { didSet { defaults.set(matchesWindowResolution, forKey: "matchesWindowResolution") } }
     @Published public var quality: StreamQuality { didSet { defaults.set(quality.rawValue, forKey: "quality") } }
     private let defaults: UserDefaults
+    var storageDefaults: UserDefaults { defaults }
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: ["clipboard": true, "audio": true, "captureShortcuts": true, "showStats": false])
@@ -148,6 +150,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
 @MainActor
 public final class CirceModel: ObservableObject {
     @Published public var hosts: [NearbyMac] = []
+    @Published public private(set) var recentConnections: [RecentConnection] = []
     @Published public var sessions: [UUID: RemoteSession] = [:]
     @Published public var isHosting = false
     @Published public var pairingPIN: String?
@@ -167,6 +170,8 @@ public final class CirceModel: ObservableObject {
     public var sharingEnabled: Bool { isHosting || preferences.shareThisMac }
     public let preferences: CircePreferences
     private var preferenceObservation: AnyCancellable?
+    private let recentStore: RecentConnectionsStore
+    private var recentObservations: [UUID: AnyCancellable] = [:]
     public let computerName = Host.current().localizedName ?? "This Mac"
     var onConnect: ((NearbyMac?, String) -> RemoteSession)?
     var onHostToggle: ((Bool) -> Void)?
@@ -183,20 +188,31 @@ public final class CirceModel: ObservableObject {
     var onShutdown: (() -> Void)?
     public init(preferences: CircePreferences? = nil) {
         self.preferences = preferences ?? CircePreferences()
+        recentStore = RecentConnectionsStore(defaults: self.preferences.storageDefaults)
+        recentConnections = recentStore.connections
         preferenceObservation = self.preferences.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
     @discardableResult
     public func connect(to host: NearbyMac) -> RemoteSession { begin(host: host, address: host.address) }
     @discardableResult
     public func connect(address: String) -> RemoteSession { begin(host: nil, address: address.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    @discardableResult
+    public func connect(to recent: RecentConnection) -> RemoteSession { begin(host: recent.nearbyHost, address: recent.address) }
+    public func removeRecent(_ id: String) { recentStore.remove(id); recentConnections = recentStore.connections }
+    public func clearRecents() { recentStore.clear(); recentConnections = [] }
     private func begin(host: NearbyMac?, address: String) -> RemoteSession {
         let session = onConnect?(host, address) ?? RemoteSession(name: host?.name ?? address, address: address)
         if onConnect == nil { session.phase = .disconnected("The connection engine is not available in this preview.") }
         session.showStats = preferences.showStats
         sessions[session.id] = session
+        recentObservations[session.id] = session.$phase.filter { $0 == .streaming }.prefix(1).sink { [weak self, weak session] _ in
+            guard let self, let session else { return }
+            self.recentStore.record(host: host, address: address, name: session.name)
+            self.recentConnections = self.recentStore.connections
+        }
         return session
     }
-    public func closeSession(_ id: UUID) { sessions[id]?.disconnect(); sessions.removeValue(forKey: id); onCloseSession?(id) }
+    public func closeSession(_ id: UUID) { sessions[id]?.disconnect(); sessions.removeValue(forKey: id); recentObservations.removeValue(forKey: id)?.cancel(); onCloseSession?(id) }
     public func setHosting(_ enabled: Bool) { hostError = nil; preferences.shareThisMac = enabled; onHostToggle?(enabled) }
     public func refreshPermissions() { onRefreshPermissions?() }
     public func requestScreenRecording() { onRequestScreen?() }
