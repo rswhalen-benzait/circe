@@ -28,6 +28,17 @@ carries full Unicode text, and dropped connections (Wi-Fi blips, VM restarts) re
 Nothing is exposed to the internet: VNC listens on the VM's localhost only and travels inside SSH,
 optionally through Google's Identity-Aware Proxy, so the VM needs no public IP or firewall hole.
 
+**Smooth video on Linux:** VNC resends changed pixels as JPEG tiles, which can't keep up with video,
+scrolling, or window drags at full resolution. On computers set up by Circe, the screen instead
+arrives as an H.264 stream (FFmpeg on the VM: NVENC on an NVIDIA GPU, otherwise x264), decoded by
+your Mac's hardware. VNC stays connected for keyboard, mouse, clipboard, cursor and resizing but
+stops sending pixels. Video, audio and input each use their own SSH connection. If the network can't
+keep up, Circe restarts the stream at a lower bitrate instead of falling behind. If video isn't
+available (older setup, no FFmpeg), Circe uses VNC pixels and the toolbar says why; *Use smooth video*
+turns it off per computer. Sound uses Opus (~128 kb/s) when the VM's audio helper is installed, raw
+PCM otherwise. Frame rate starts conservative on small software-encoded VMs: 20 fps on 2 vCPUs,
+30 fps on 4+, 60 fps with NVENC.
+
 **While connected:**
 - Every key goes to the remote Mac, including ⌘-Tab, ⌘-Space, ⌘-Q and Mission Control
   (grant Circe *Accessibility* on this Mac for the system-wide shortcuts).
@@ -111,7 +122,9 @@ End-to-end without Screen Recording permission, using generated frames:
 python3 scripts/test/fake_rfb_server.py 5999 > /tmp/expect &   # VNC decoder fixture
 .build/debug/circe-cli vnc 127.0.0.1:5999 $(head -1 /tmp/expect)
 
-scripts/test/linux-e2e.sh    # Linux/cloud path: fake ssh + fake TigerVNC + fake PulseAudio
+scripts/test/linux-e2e.sh    # Linux/cloud path: fake ssh + fake TigerVNC + fake PulseAudio + fake video/audio helpers
+CIRCE_TEST_FFMPEG=/path/to/ffmpeg scripts/test/linux-e2e.sh   # + the real video helper and real x264
+python3 scripts/test/check_linux_video.py; python3 scripts/test/check_linux_setup.py   # VM-side scripts
 .build/debug/circe-cli vnc --gcloud INSTANCE --zone ZONE [--project P]   # a real GCP VM
 .build/debug/circe-cli linux-setup --gcloud INSTANCE --zone ZONE --script scripts/linux/setup-circe-host.sh
 ```
@@ -123,17 +136,19 @@ scripts/test/linux-e2e.sh    # Linux/cloud path: fake ssh + fake TigerVNC + fake
 | `CirceCore` | Wire protocol, handshake/crypto, framed TCP, UDP datagrams + FEC, Opus, clipboard |
 | `CirceHost` | Sharing service: capture, encode, input injection, cursor, display modes, file receive |
 | `CirceClient` | Sessions: discovery, decode/display, input capture, audio playback, reconnect |
-| `CirceVNC` | RFB client: VNC/ARD/VeNCrypt auth; Tight+JPEG/ZRLE/Hextile; continuous updates; resize; UTF-8 clipboard; SSH / IAP tunnels; audio over SSH; one-click Linux setup |
+| `CirceVNC` | RFB client: VNC/ARD/VeNCrypt auth; Tight+JPEG/ZRLE/Hextile; continuous updates; resize; UTF-8 clipboard; SSH / IAP tunnels; H.264 video (FLV) and Opus/PCM audio over SSH; one-click Linux setup |
 | `CirceUI`, `Circe` | SwiftUI app, design system, menu bar extra, settings |
 | `circe-cli`, `circe-selftest` | Test harnesses |
 
 ## Not done yet
 
-- Linux machines stream through VNC (Tight/JPEG), not Circe's native HEVC/UDP pipeline, so motion
-  is smoother Mac to Mac. A native Linux host would need its own capture/encode service.
-- The Linux path hasn't been run against a real GCP VM yet. It's covered by fixtures that mimic
-  ssh, TigerVNC and PulseAudio, and the gcloud error handling was checked against a live (expired)
-  login. Run `scripts/test/linux-e2e.sh`, then try a real VM.
+- Linux video is H.264 over TCP (SSH/IAP), not Circe's native UDP pipeline: there's no packet-loss
+  recovery and no 4:4:4 colour, so fine coloured text is a little softer than on a Mac-to-Mac
+  session. Google says IAP isn't meant for bulk transfer and may rate-limit it; a direct SSH route
+  (public IP or VPN) is faster.
+- The Linux path hasn't been run against a real GCP VM yet. Fixtures mimic ssh, TigerVNC,
+  PulseAudio and the VM helpers. The real video helper and real x264 output were tested on macOS
+  with a test pattern in place of X11 capture. Run `scripts/test/linux-e2e.sh`, then try a real VM.
 
 - Microphone forwarding to the remote Mac (it needs a virtual audio device on the host).
 - Connecting through NAT without a VPN (use Tailscale or similar for now).
