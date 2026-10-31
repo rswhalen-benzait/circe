@@ -16,16 +16,16 @@ public struct LauncherView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     introduction
-                    nearby
-                    recents
-                    manualConnection
+                    nearby.focusSection()
+                    recents.focusSection()
+                    manualConnection.focusSection()
                 }.padding(.horizontal, 32).padding(.top, 20).padding(.bottom, 30)
             }.scrollIndicators(.hidden)
             footer
         }
         .frame(minWidth: 540, idealWidth: 640, minHeight: 570, idealHeight: 650)
         .background(CirceStyle.paper).foregroundStyle(CirceStyle.ink)
-        .preferredColorScheme(.light)
+
         .background(WindowReader(onWindow: { window in
             window?.identifier = NSUserInterfaceItemIdentifier("circe.launcher")
             if CirceStartup.isQuietLaunch { window?.orderOut(nil) }
@@ -48,7 +48,7 @@ public struct LauncherView: View {
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Your Mac.\nWherever you are.")
-                .font(.system(size: 36, weight: .regular, design: .serif)).tracking(-1.2).lineSpacing(-1)
+                .font(.system(size: 36, weight: .regular, design: .serif)).tracking(-1.2).lineSpacing(-1).accessibilityAddTraits(.isHeader)
             Text("A familiar desktop, just a connection away.")
                 .font(.system(size: 13)).foregroundStyle(CirceStyle.secondaryInk)
         }.padding(.bottom, 3)
@@ -72,7 +72,7 @@ public struct LauncherView: View {
                 HStack(spacing: 15) {
                     ZStack {
                         Circle().fill(CirceStyle.violetWash).frame(width: 50, height: 50)
-                        Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 21, weight: .light)).foregroundStyle(CirceStyle.violet)
+                        Image(systemName: "antenna.radiowaves.left.and.right").accessibilityHidden(true).font(.system(size: 21, weight: .light)).foregroundStyle(CirceStyle.violet)
                     }
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Looking for your Macs").font(.system(size: 13, weight: .semibold))
@@ -81,7 +81,8 @@ public struct LauncherView: View {
                     }
                     Spacer(minLength: 0)
                 }.padding(20).frame(maxWidth: .infinity, minHeight: 118, alignment: .leading)
-                    .background(.white.opacity(0.65), in: RoundedRectangle(cornerRadius: 16))
+                    .accessibilityElement(children: .combine)
+                    .background(CirceStyle.surface.opacity(0.65), in: RoundedRectangle(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CirceStyle.line, style: StrokeStyle(lineWidth: 1, dash: [4, 4])))
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 12)], spacing: 12) {
@@ -99,7 +100,7 @@ public struct LauncherView: View {
                 HStack {
                     SectionEyebrow(title: "Recent connections")
                     Spacer()
-                    Button("Clear") { model.clearRecents() }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
+                    Button("Clear") { model.clearRecents() }.accessibilityLabel("Clear recent connections").buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
                 }
                 VStack(spacing: 7) {
                     ForEach(model.recentConnections) { recent in
@@ -114,10 +115,11 @@ public struct LauncherView: View {
                                 Spacer()
                                 Image(systemName: "arrow.up.right").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
                             }.padding(.horizontal, 15).padding(.vertical, 12).frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.white.opacity(0.75), in: RoundedRectangle(cornerRadius: 11))
+                                .background(CirceStyle.surface.opacity(0.75), in: RoundedRectangle(cornerRadius: 11))
                                 .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(CirceStyle.line))
                                 .contentShape(RoundedRectangle(cornerRadius: 11))
-                        }.buttonStyle(.plain).accessibilityLabel("Reconnect to \(recent.name)")
+                        }.buttonStyle(FocusOutlineButtonStyle()).accessibilityLabel("Reconnect to \(recent.name)").accessibilityValue(recent.detail)
+                            .accessibilityHint("Opens a remote desktop session.")
                             .contextMenu { Button("Remove from recents") { model.removeRecent(recent.id) } }
                     }
                 }
@@ -130,18 +132,19 @@ public struct LauncherView: View {
             SectionEyebrow(title: "Connect by address")
             HStack(spacing: 8) {
                 HStack(spacing: 9) {
-                    Image(systemName: "network").foregroundStyle(CirceStyle.secondaryInk)
+                    Image(systemName: "network").foregroundStyle(CirceStyle.secondaryInk).accessibilityHidden(true)
                     TextField("Hostname or IP address", text: $address)
                         .textFieldStyle(.plain).font(.system(size: 13)).focused($addressFocused)
                         .onSubmit(connectManually).accessibilityLabel("Remote computer address")
+                        .accessibilityHint("Enter a hostname, IP address, or VNC address, then press Return to connect.")
                 }.padding(.horizontal, 13).frame(height: 38)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(addressFocused ? CirceStyle.violet : CirceStyle.line))
-                Button("Connect", action: connectManually).buttonStyle(PrimaryButtonStyle())
+                    .background(CirceStyle.surface, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(addressFocused ? CirceStyle.violet : CirceStyle.controlBorder))
+                Button("Connect", action: connectManually).accessibilityLabel("Connect to entered address").buttonStyle(PrimaryButtonStyle())
                     .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             if let error = addressError {
-                Text(error).font(.system(size: 11)).foregroundStyle(.red).accessibilityLabel("Address error: \(error)")
+                Text(error).font(.system(size: 11)).foregroundStyle(CirceStyle.error).accessibilityLabel("Address error: \(error)")
             } else {
                 Text("Use a hostname, IP address, or vnc://host for Screen Sharing.")
                     .font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
@@ -159,7 +162,7 @@ public struct LauncherView: View {
                 HStack(spacing: 5) { Text(model.isHosting ? "Sharing settings" : "Share this Mac"); Image(systemName: "arrow.up.right").font(.system(size: 9)) }
             }.buttonStyle(QuietButtonStyle())
         }.padding(.horizontal, 32).padding(.vertical, 16)
-            .background(.white.opacity(0.5)).overlay(alignment: .top) { Rectangle().fill(CirceStyle.line.opacity(0.65)).frame(height: 1) }
+            .background(CirceStyle.surface.opacity(0.5)).overlay(alignment: .top) { Rectangle().fill(CirceStyle.line.opacity(0.65)).frame(height: 1) }
     }
 
     private func connect(_ session: RemoteSession) { openWindow(value: session.id) }
@@ -176,6 +179,7 @@ public struct LauncherView: View {
 }
 
 private struct HostCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let host: NearbyMac
     let action: () -> Void
     @CirceViewState<Bool> private var hovered = false
@@ -194,11 +198,11 @@ private struct HostCard: View {
                     HStack(spacing: 5) { StatusDot(); Text("Ready to connect").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk) }
                 }
             }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                .background(hovered ? Color.white : Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 15))
+                .background(hovered ? CirceStyle.surface : CirceStyle.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: 15))
                 .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(hovered ? CirceStyle.violet.opacity(0.4) : CirceStyle.line))
                 .shadow(color: CirceStyle.violet.opacity(hovered ? 0.07 : 0), radius: 12, y: 5)
                 .contentShape(RoundedRectangle(cornerRadius: 15))
-        }.buttonStyle(.plain).onHover { hovered = $0 }.animation(.easeOut(duration: 0.16), value: hovered)
-            .accessibilityLabel("Connect to \(host.name)")
+        }.buttonStyle(FocusOutlineButtonStyle(cornerRadius: 15)).onHover { hovered = $0 }.animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: hovered)
+            .accessibilityLabel("Connect to \(host.name)").accessibilityHint("Opens a remote desktop session.")
     }
 }

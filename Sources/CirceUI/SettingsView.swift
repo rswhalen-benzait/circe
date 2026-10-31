@@ -1,12 +1,18 @@
 import SwiftUI
 
+public enum CirceSettingsTab: Hashable { case general, sharing, about }
+
 public struct CirceSettingsView: View {
+    @CirceViewState<CirceSettingsTab> private var selectedTab: CirceSettingsTab
     @ObservedObject private var model: CirceModel
     @ObservedObject private var preferences: CircePreferences
     @CirceViewState<Bool> private var showHosting = false
-    public init(model: CirceModel) { self.model = model; self.preferences = model.preferences }
+    public init(model: CirceModel, initialTab: CirceSettingsTab = .general) {
+        self.model = model; self.preferences = model.preferences
+        _selectedTab = CirceViewState(initialValue: initialTab)
+    }
     public var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             Form {
                 Section("Connections") {
                     Toggle("Fit remote display to window", isOn: $preferences.matchesWindowResolution)
@@ -27,7 +33,7 @@ public struct CirceSettingsView: View {
                         Text("Allow Circe in Login Items to finish enabling it.").font(.caption).foregroundStyle(.secondary)
                         Button("Open Login Items…") { model.openLoginSettings() }
                     }
-                    if let error = model.loginItemError { Text(error).font(.caption).foregroundStyle(.red) }
+                    if let error = model.loginItemError { Text(error).font(.caption).foregroundStyle(CirceStyle.error) }
                 }
                 Section("Sharing this Mac") {
                     LabeledContent("Computer name", value: model.computerName)
@@ -38,7 +44,7 @@ public struct CirceSettingsView: View {
                     Text("To release the remote keyboard, press Control–Option–Command–Escape. Full screen: Control–Option–Command–F. Hold these three modifiers to use shortcuts on this Mac.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-            }.formStyle(.grouped).tabItem { Label("General", systemImage: "gearshape") }
+            }.formStyle(.grouped).tag(CirceSettingsTab.general).tabItem { Label("General", systemImage: "gearshape") }
             Form {
                 Section("Access") {
                     Toggle("Allow Mac account sign-in", isOn: Binding(get: { model.allowPasswordAuthentication }, set: { model.setPasswordAuthentication($0) }))
@@ -56,7 +62,7 @@ public struct CirceSettingsView: View {
                                     Text(peer.fingerprint).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Button("Forget") { model.forgetComputer(peer.id) }.help("Require \(peer.name) to pair again")
+                                Button("Forget") { model.forgetComputer(peer.id) }.accessibilityLabel("Forget \(peer.name)").help("Require \(peer.name) to pair again")
                             }
                         }
                     }
@@ -66,17 +72,17 @@ public struct CirceSettingsView: View {
                         Text(model.fingerprint).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
                     }
                 }
-            }.formStyle(.grouped).tabItem { Label("Sharing", systemImage: "person.2") }
+            }.formStyle(.grouped).tag(CirceSettingsTab.sharing).tabItem { Label("Sharing", systemImage: "person.2") }
             VStack(spacing: 14) {
                 CirceMark(size: 78)
                 Text("Circe").font(.system(size: 36, weight: .regular, design: .serif)).tracking(-1)
                 Text("Your Mac. Wherever you are.").font(.system(size: 13)).foregroundStyle(.secondary)
                 Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")")
-                    .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
                 Text("Named for the goddess of enchantment.").font(.system(size: 11)).foregroundStyle(.secondary).padding(.top, 12)
-            }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CirceStyle.paper).preferredColorScheme(.light)
-                .tabItem { Label("About", systemImage: "sparkles") }
-        }.frame(width: 520, height: 390).tint(CirceStyle.violet)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CirceStyle.paper)
+                .tag(CirceSettingsTab.about).tabItem { Label("About", systemImage: "sparkles") }
+        }.frame(width: 540, height: 460).tint(CirceStyle.primaryFill)
             .onAppear { model.refreshPermissions() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshPermissions() }
             .sheet(isPresented: $showHosting) { HostingSetupView(model: model) }

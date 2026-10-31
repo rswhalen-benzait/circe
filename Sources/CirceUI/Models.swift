@@ -128,6 +128,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     var onAudio: ((Bool) -> Void)?
     var onQuality: ((StreamQuality) -> Void)?
     var onReleaseKeyboard: (() -> Void)?
+    var onScreenReaderChange: ((Bool) -> Void)?
     var onSelectDisplay: ((UInt32) -> Void)?
     var onRequestAccessibility: (() -> Void)?
     public init(name: String, address: String) { self.name = name; self.address = address }
@@ -153,7 +154,8 @@ public final class RemoteSession: ObservableObject, Identifiable {
     public func setClipboard(_ value: Bool) { clipboardEnabled = value; onClipboard?(value) }
     public func setAudio(_ value: Bool) { audioEnabled = value; onAudio?(value) }
     public func setQuality(_ value: StreamQuality) { quality = value; onQuality?(value) }
-    public func releaseKeyboard() { onReleaseKeyboard?() }
+    public func releaseKeyboard() { if phase == .streaming { onReleaseKeyboard?() } }
+    public func setScreenReaderActive(_ enabled: Bool) { onScreenReaderChange?(enabled) }
     public func selectDisplay(_ id: UInt32) { selectedDisplayID = id; onSelectDisplay?(id) }
     public func requestAccessibility() { releaseKeyboard(); onRequestAccessibility?() }
     public func dismissAccessibilityHint() { showAccessibilityHint = false }

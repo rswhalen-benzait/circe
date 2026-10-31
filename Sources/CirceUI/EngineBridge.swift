@@ -238,6 +238,8 @@ private final class NativeSessionBinding {
         presentation.qualityAvailable = true
         presentation.keyboardReleaseAvailable = true
         presentation.onReleaseKeyboard = { [weak engine] in engine?.releaseInput() }
+        let requestedShortcuts = engine.capturesSystemShortcuts
+        presentation.onScreenReaderChange = { [weak engine] enabled in engine?.capturesSystemShortcuts = requestedShortcuts && !enabled }
         presentation.onSelectDisplay = { [weak engine] in engine?.selectDisplay($0) }
         presentation.clipboardEnabled = engine.clipboardSyncEnabled
         presentation.audioEnabled = engine.config.audioEnabled
@@ -292,6 +294,8 @@ private final class VNCSessionBinding {
         presentation.keyboardReleaseAvailable = true
         presentation.clipboardEnabled = engine.clipboardSyncEnabled
         presentation.onReleaseKeyboard = { [weak engine] in engine?.releaseInput() }
+        let requestedShortcuts = engine.capturesSystemShortcuts
+        presentation.onScreenReaderChange = { [weak engine] enabled in engine?.capturesSystemShortcuts = requestedShortcuts && !enabled }
         presentation.onPassword = { [weak engine] username, password in engine?.submitPassword(username: username, password: password) }
         presentation.onDisconnect = { [weak engine] in engine?.disconnect() }
         presentation.onReconnect = { [weak engine] in engine?.connect() }

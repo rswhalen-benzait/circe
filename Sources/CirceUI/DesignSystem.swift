@@ -5,13 +5,24 @@ import SwiftUI
 public typealias CirceViewState<Value> = State<Value>
 
 public enum CirceStyle {
-    public static let ink = Color(red: 0.14, green: 0.12, blue: 0.22)
-    public static let secondaryInk = Color(red: 0.43, green: 0.41, blue: 0.49)
-    public static let violet = Color(red: 0.43, green: 0.29, blue: 0.77)
-    public static let violetWash = Color(red: 0.94, green: 0.92, blue: 0.98)
-    public static let paper = Color(red: 0.98, green: 0.97, blue: 0.95)
-    public static let line = Color(red: 0.89, green: 0.87, blue: 0.90)
-    public static let green = Color(red: 0.20, green: 0.55, blue: 0.40)
+    private static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            return NSColor(srgbRed: CGFloat((hex >> 16) & 255) / 255,
+                           green: CGFloat((hex >> 8) & 255) / 255, blue: CGFloat(hex & 255) / 255, alpha: 1)
+        })
+    }
+    public static let ink = adaptive(0x242038, 0xF5F0FA)
+    public static let secondaryInk = adaptive(0x625B70, 0xC3BACE)
+    public static let violet = adaptive(0x6541B1, 0xBFA6FF)
+    public static let violetWash = adaptive(0xF0EBF9, 0x31263F)
+    public static let paper = adaptive(0xFAF8F4, 0x19161F)
+    public static let surface = adaptive(0xFFFFFF, 0x28232F)
+    public static let line = adaptive(0xD8D1DF, 0x51465E)
+    public static let controlBorder = adaptive(0x8D819B, 0x8C7D9D)
+    public static let green = adaptive(0x28724F, 0x7AD5A7)
+    public static let error = adaptive(0xAF263B, 0xFF9BAA)
+    public static let primaryFill = Color(red: 0.40, green: 0.25, blue: 0.69)
     public static let canvas = Color(red: 0.045, green: 0.038, blue: 0.075)
 }
 
@@ -34,20 +45,33 @@ struct CirceMark: View {
 
 struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 13, weight: .semibold))
             .foregroundStyle(.white).padding(.horizontal, 16).frame(height: 36)
-            .background(CirceStyle.violet.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 10))
+            .background(CirceStyle.primaryFill.opacity(configuration.isPressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused ? CirceStyle.violet : .clear, lineWidth: 2).padding(-3))
             .contentShape(RoundedRectangle(cornerRadius: 10)).opacity(enabled ? 1 : 0.45)
     }
 }
 
 struct QuietButtonStyle: ButtonStyle {
+    @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.font(.system(size: 12, weight: .medium))
             .foregroundStyle(CirceStyle.secondaryInk).padding(.horizontal, 11).frame(height: 32)
-            .background(configuration.isPressed ? CirceStyle.line : Color.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(CirceStyle.line.opacity(0.8)))
+            .background(configuration.isPressed ? CirceStyle.line : CirceStyle.surface, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(CirceStyle.controlBorder))
+            .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(focused ? CirceStyle.violet : .clear, lineWidth: 2).padding(-3))
+    }
+}
+
+struct FocusOutlineButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 12
+    @Environment(\.isFocused) private var focused
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.overlay(RoundedRectangle(cornerRadius: cornerRadius)
+            .strokeBorder(focused ? CirceStyle.violet : .clear, lineWidth: 2).padding(-2))
     }
 }
 
@@ -61,6 +85,7 @@ struct SectionEyebrow: View {
     var body: some View {
         Text(title.uppercased()).font(.system(size: 10, weight: .semibold, design: .rounded))
             .tracking(1.6).foregroundStyle(CirceStyle.secondaryInk)
+            .accessibilityLabel(title).accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -70,13 +95,14 @@ struct InlineNotice: View {
     var symbol = "exclamationmark.circle"
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(CirceStyle.violet)
+            Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(CirceStyle.violet).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.system(size: 12, weight: .semibold))
                 Text(message).font(.system(size: 12)).foregroundStyle(CirceStyle.secondaryInk).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }.padding(14).background(CirceStyle.violetWash, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .combine)
     }
 }
 

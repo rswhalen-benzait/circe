@@ -1,9 +1,43 @@
 import AppKit
 import Carbon
 import Foundation
+import SwiftUI
 
 @main struct UIModelChecks {
     @MainActor static func main() throws {
+        func rgb(_ color: Color, _ appearance: NSAppearance) -> [Double] {
+            var channels: [Double] = []
+            appearance.performAsCurrentDrawingAppearance {
+                let resolved = NSColor(color).usingColorSpace(.sRGB)!
+                channels = [Double(resolved.redComponent), Double(resolved.greenComponent), Double(resolved.blueComponent)]
+            }
+            return channels
+        }
+        func luminance(_ channels: [Double]) -> Double {
+            let c = channels.map { $0 <= 0.04045 ? $0 / 12.92 : pow(($0 + 0.055) / 1.055, 2.4) }
+            return c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722
+        }
+        var lowest = Double.infinity
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = NSAppearance(named: name)!
+            let pairs: [(String, Color, Color, Double)] = [
+                ("primary text", CirceStyle.ink, CirceStyle.paper, 4.5),
+                ("secondary text", CirceStyle.secondaryInk, CirceStyle.paper, 4.5),
+                ("secondary on surface", CirceStyle.secondaryInk, CirceStyle.surface, 4.5),
+                ("accent", CirceStyle.violet, CirceStyle.paper, 4.5),
+                ("notice text", CirceStyle.secondaryInk, CirceStyle.violetWash, 4.5),
+                ("errors", CirceStyle.error, CirceStyle.paper, 4.5),
+                ("primary button", .white, CirceStyle.primaryFill, 4.5),
+                ("control boundary", CirceStyle.controlBorder, CirceStyle.surface, 3)
+            ]
+            for (label, foreground, background, minimum) in pairs {
+                let f = luminance(rgb(foreground, appearance)), b = luminance(rgb(background, appearance))
+                let ratio = (max(f, b) + 0.05) / (min(f, b) + 0.05)
+                precondition(ratio >= minimum, "\(name): \(label) contrast is \(ratio)")
+                if minimum == 4.5 { lowest = min(lowest, ratio) }
+            }
+        }
+        print(String(format: "Light/dark contrast checks passed; lowest text ratio %.2f:1", lowest))
         let suite = "com.circe.ui-checks.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -31,7 +65,14 @@ import Foundation
         precondition(session.scale == .fit && session.matchesWindowResolution)
         session.setScale(.actual)
         precondition(!session.matchesWindowResolution)
+        var releases = 0
+        session.onReleaseKeyboard = { releases += 1 }
+        session.phase = .connecting
+        session.releaseKeyboard()
+        precondition(releases == 0, "Local Accessibility actions must not send input before authentication")
         session.phase = .streaming
+        session.releaseKeyboard()
+        precondition(releases == 1)
         session.isDraggingFiles = true
         session.phase = .reconnecting(1)
         precondition(!session.isDraggingFiles, "A lost connection must clear the drop affordance")

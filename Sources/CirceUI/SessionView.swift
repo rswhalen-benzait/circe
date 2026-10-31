@@ -3,6 +3,10 @@ import SwiftUI
 
 public struct SessionView: View {
     @ObservedObject private var session: RemoteSession
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private enum Control: Hashable { case fullScreen, scale, options, disconnect, allow, dismissHint }
+    @FocusState private var focusedControl: Control?
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
     @CirceViewState<Bool> private var hoveringToolbar = false
@@ -25,7 +29,7 @@ public struct SessionView: View {
                 }
                 if case .reconnecting(let attempt) = session.phase {
                     HStack(spacing: 9) {
-                        ProgressView().controlSize(.small)
+                        ProgressView().controlSize(.small).accessibilityHidden(true)
                         Text("Reconnecting to \(session.name)…").font(.system(size: 12, weight: .medium))
                         Text("Attempt \(attempt)").font(.system(size: 10)).foregroundStyle(.secondary)
                     }.padding(.horizontal, 18).padding(.vertical, 12).background(.regularMaterial, in: Capsule())
@@ -36,26 +40,31 @@ public struct SessionView: View {
                 }
                 VStack(spacing: 8) {
                     toolbar.opacity(toolbarVisible ? 1 : 0)
-                        .offset(y: toolbarVisible ? 0 : -12).allowsHitTesting(toolbarVisible)
+                        .offset(y: toolbarVisible ? 0 : -12).allowsHitTesting(toolbarVisible).disabled(!toolbarVisible).accessibilityHidden(!toolbarVisible)
                         .onHover { hoveringToolbar = $0; if $0 { revealToolbar() } else { scheduleHide() } }
                     if session.showAccessibilityHint { accessibilityHint.padding(.horizontal, 16) }
-                }.padding(.top, 12).animation(.easeInOut(duration: 0.2), value: toolbarVisible)
+                }.padding(.top, 12).animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: toolbarVisible)
             case .disconnected(let reason): if let reason { disconnected(reason) } else { Color.clear }
             }
         }.frame(minWidth: 400, minHeight: 320).ignoresSafeArea()
-            .animation(.easeOut(duration: 0.15), value: session.isDraggingFiles)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: session.isDraggingFiles)
             .background(WindowReader(onWindow: { if window !== $0 { window = $0; configureWindow() } }, onTopEdge: { revealToolbar() }, onReleaseKeyboard: {
                 guard session.keyboardReleaseAvailable else { return false }
                 session.releaseKeyboard(); revealToolbar(); return true
             }))
             .navigationTitle(session.name)
-            .onAppear { scheduleHide(); closeIfEndedCleanly() }
+            .onAppear { session.setScreenReaderActive(voiceOverEnabled); scheduleHide(); closeIfEndedCleanly() }
             .onDisappear { hideTask?.cancel(); session.disconnect() }
             .onChange(of: session.phase) { _, value in
-                if value == .streaming { revealToolbar() }
+                if value == .streaming { revealToolbar(); if voiceOverEnabled { session.releaseKeyboard(); focusedControl = .fullScreen } }
                 configureWindow(); closeIfEndedCleanly()
             }
             .onChange(of: session.remotePixelSize) { _, _ in configureWindow() }
+            .onChange(of: voiceOverEnabled) { _, enabled in
+                session.setScreenReaderActive(enabled)
+                if enabled { session.releaseKeyboard(); focusedControl = .fullScreen; revealToolbar() } else { scheduleHide() }
+            }
+            .onChange(of: focusedControl) { _, control in if control != nil { revealToolbar() } else { scheduleHide() } }
             .onChange(of: toolbarVisible) { _, _ in updateTrafficLights() }
             .onChange(of: session.showAccessibilityHint) { _, shown in if shown { revealToolbar() } else { scheduleHide() } }
             .onReceive(NotificationCenter.default.publisher(for: .circeDisconnectSession)) { _ in
@@ -71,17 +80,17 @@ public struct SessionView: View {
     private var connecting: some View {
         VStack(spacing: 18) {
             CirceMark(size: 62)
-            ProgressView().controlSize(.small).tint(.white)
-            Text("Connecting to \(session.name)").font(.system(size: 17, weight: .medium))
+            ProgressView().controlSize(.small).tint(.white).accessibilityHidden(true)
+            Text("Connecting to \(session.name)").accessibilityAddTraits(.isHeader).font(.system(size: 17, weight: .medium))
             Text("Making yourself at home.").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
             Button("Cancel") { session.disconnect() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).padding(.top, 4)
         }.foregroundStyle(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     private func disconnected(_ reason: String) -> some View {
         VStack(spacing: 20) {
-            Image(systemName: "rectangle.slash").font(.system(size: 39, weight: .ultraLight)).foregroundStyle(CirceStyle.violet)
+            Image(systemName: "rectangle.slash").accessibilityHidden(true).font(.system(size: 39, weight: .ultraLight)).foregroundStyle(CirceStyle.violet)
             VStack(spacing: 9) {
-                Text("Session ended").font(.system(size: 30, weight: .regular, design: .serif))
+                Text("Session ended").accessibilityAddTraits(.isHeader).font(.system(size: 30, weight: .regular, design: .serif))
                 Text(reason.isEmpty ? "The connection to \(session.name) closed." : reason)
                     .font(.system(size: 13)).foregroundStyle(CirceStyle.secondaryInk).multilineTextAlignment(.center).frame(maxWidth: 380)
             }
@@ -89,7 +98,7 @@ public struct SessionView: View {
                 Button("Back to Macs") { if !CirceWindows.showLauncherIfOpen() { openWindow(id: "launcher") }; dismissWindow() }.buttonStyle(QuietButtonStyle())
                 if session.canReconnect { Button("Reconnect") { session.reconnect() }.buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction) }
             }
-        }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity).background(CirceStyle.paper).foregroundStyle(CirceStyle.ink).preferredColorScheme(.light)
+        }.padding(40).frame(maxWidth: .infinity, maxHeight: .infinity).background(CirceStyle.paper).foregroundStyle(CirceStyle.ink)
     }
     private var toolbar: some View {
         HStack(spacing: 4) {
@@ -98,13 +107,13 @@ public struct SessionView: View {
                 Text(session.name).font(.system(size: 11, weight: .medium)).lineLimit(1).frame(maxWidth: 140)
             }.padding(.leading, 11).padding(.trailing, 7)
             separator
-            tool("Full screen (⌃⌥⌘F)", symbol: "arrow.up.left.and.arrow.down.right") { window?.toggleFullScreen(nil) }
+            tool("Full screen (Control Option Command F)", control: .fullScreen, symbol: "arrow.up.left.and.arrow.down.right") { window?.toggleFullScreen(nil) }
             Menu {
                 ForEach(DisplayScale.allCases) { scale in
                     Button { session.setScale(scale) } label: { Label(scale.rawValue, systemImage: session.scale == scale ? "checkmark" : "") }
                 }
             } label: { Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left").frame(width: 31, height: 30) }
-                .menuStyle(.borderlessButton).fixedSize().help("Display scale")
+                .menuStyle(.borderlessButton).fixedSize().help("Display scale").accessibilityLabel("Display scale").accessibilityValue(session.scale.rawValue).focused($focusedControl, equals: .scale)
                 .disabled(!session.scaleAvailable)
             Menu {
                 if session.displays.count > 1 {
@@ -129,10 +138,10 @@ public struct SessionView: View {
                     .disabled(!session.keyboardReleaseAvailable)
                 Text("Control–Option–Command–Escape")
             } label: { Image(systemName: "slider.horizontal.3").frame(width: 31, height: 30) }
-                .menuStyle(.borderlessButton).fixedSize().help("Session options")
+                .menuStyle(.borderlessButton).fixedSize().help("Session options").accessibilityLabel("Session options").focused($focusedControl, equals: .options)
             separator
-            tool("Disconnect (⌃⌥⌘D)", symbol: "power") { session.disconnect() }
-        }.padding(5).foregroundStyle(.white.opacity(0.9))
+            tool("Disconnect (Control Option Command D)", control: .disconnect, symbol: "power") { session.disconnect() }
+        }.padding(5).foregroundStyle(.white.opacity(0.9)).focusSection().accessibilityElement(children: .contain).accessibilityLabel("Session controls")
             .background(.ultraThinMaterial, in: Capsule()).environment(\.colorScheme, .dark)
             .overlay(Capsule().strokeBorder(.white.opacity(0.14)))
             .shadow(color: .black.opacity(0.25), radius: 12, y: 5).fixedSize(horizontal: true, vertical: false)
@@ -140,21 +149,21 @@ public struct SessionView: View {
     }
     private var accessibilityHint: some View {
         HStack(spacing: 9) {
-            Image(systemName: "keyboard").font(.system(size: 15)).foregroundStyle(.white.opacity(0.7))
+            Image(systemName: "keyboard").accessibilityHidden(true).font(.system(size: 15)).foregroundStyle(.white.opacity(0.7))
             Text("Allow Accessibility to send ⌘-Tab to \(session.name).")
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85)).fixedSize(horizontal: false, vertical: true)
-            Button("Allow…") { session.requestAccessibility() }.buttonStyle(.bordered).controlSize(.small)
+            Button("Allow…") { session.requestAccessibility() }.accessibilityLabel("Allow client Accessibility").focused($focusedControl, equals: .allow).buttonStyle(.bordered).controlSize(.small)
             Button { session.dismissAccessibilityHint() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).frame(width: 20, height: 24) }
-                .buttonStyle(.plain).foregroundStyle(.white.opacity(0.6)).help("Dismiss Accessibility hint").accessibilityLabel("Dismiss Accessibility hint")
+                .buttonStyle(.plain).foregroundStyle(.white.opacity(0.6)).help("Dismiss Accessibility hint").accessibilityLabel("Dismiss Accessibility hint").focused($focusedControl, equals: .dismissHint)
         }.padding(11).frame(maxWidth: 420)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13))
             .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.white.opacity(0.12)))
             .environment(\.colorScheme, .dark)
     }
     private var separator: some View { Rectangle().fill(.white.opacity(0.17)).frame(width: 1, height: 17).padding(.horizontal, 3) }
-    private func tool(_ label: String, symbol: String, action: @escaping () -> Void) -> some View {
+    private func tool(_ label: String, control: Control, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: symbol).font(.system(size: 12)).frame(width: 31, height: 30).contentShape(Circle()) }
-            .buttonStyle(.plain).help(label).accessibilityLabel(label)
+            .buttonStyle(.plain).help(label).accessibilityLabel(label).focused($focusedControl, equals: control)
     }
     private var stats: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -173,14 +182,14 @@ public struct SessionView: View {
                 }
             }
         }.foregroundStyle(.white).padding(.horizontal, 13).padding(.vertical, 9)
-            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+            .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 9))
             .accessibilityElement(children: .combine)
     }
     private func measured(_ value: Double) -> String { value > 0 ? String(format: "%.1f", value) : "—" }
     private func stat(_ value: String, _ unit: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 3) {
             Text(value).font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(.white)
-            Text(unit).font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
+            Text(unit).font(.system(size: 10)).foregroundStyle(.white.opacity(0.72))
         }
     }
     private func closeIfEndedCleanly() {
@@ -221,7 +230,7 @@ public struct SessionView: View {
         hideTask?.cancel()
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(2.5))
-            guard !Task.isCancelled, !hoveringToolbar, !session.showAccessibilityHint else { return }
+            guard !Task.isCancelled, !hoveringToolbar, !session.showAccessibilityHint, !voiceOverEnabled, focusedControl == nil else { return }
             toolbarVisible = false
         }
     }
@@ -234,7 +243,13 @@ private struct SessionSurface: NSViewRepresentable {
     private func update(_ view: SessionContainer) {
         view.scale = session.scale
         view.remotePixels = session.remotePixelSize
-        if let display = session.displayView { view.install(display) }
+        if let display = session.displayView {
+            display.setAccessibilityElement(true)
+            display.setAccessibilityRole(.group)
+            display.setAccessibilityLabel("Remote desktop of \(session.name)")
+            display.setAccessibilityHelp("Remote screen video. Control Option Command Escape returns input to this Mac. Local session controls follow this screen.")
+            view.install(display)
+        }
         view.needsLayout = true
     }
 }

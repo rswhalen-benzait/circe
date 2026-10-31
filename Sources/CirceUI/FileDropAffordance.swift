@@ -7,7 +7,7 @@ struct FileDropAffordance: View {
             CirceStyle.violet.opacity(0.10)
             RoundedRectangle(cornerRadius: 15).strokeBorder(CirceStyle.violet.opacity(0.8), style: StrokeStyle(lineWidth: 2, dash: [8, 5])).padding(16)
             VStack(spacing: 12) {
-                Image(systemName: "doc.on.doc").font(.system(size: 29, weight: .light)).foregroundStyle(Color(red: 0.83, green: 0.77, blue: 1))
+                Image(systemName: "doc.on.doc").accessibilityHidden(true).font(.system(size: 29, weight: .light)).foregroundStyle(Color(red: 0.83, green: 0.77, blue: 1))
                 VStack(spacing: 6) {
                     Text("Drop to copy").font(.system(size: 26, weight: .regular, design: .serif))
                     Text("to \(hostName)’s Downloads").font(.system(size: 13)).foregroundStyle(.white.opacity(0.7))
