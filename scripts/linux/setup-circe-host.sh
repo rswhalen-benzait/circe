@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # A private, persistent Linux desktop for Circe's SSH / Google Cloud connections.
+main() {
 set -euo pipefail
 umask 077
 
@@ -114,19 +115,21 @@ if command -v pipewire-pulse >/dev/null; then BACKEND=pipewire-pulse; fi
 AUDIO_PACKAGE=pulseaudio-utils
 if [[ "$BACKEND" == pulseaudio ]]; then AUDIO_PACKAGE=pulseaudio; fi
 if [[ "$FAMILY" == *debian* || "$FAMILY" == *ubuntu* ]]; then
-    as_root env DEBIAN_FRONTEND=noninteractive apt-get update
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get update </dev/null
+    VNC_TOOLS_PACKAGE=tigervnc-common
+    if apt-cache show tigervnc-tools >/dev/null 2>&1; then VNC_TOOLS_PACKAGE=tigervnc-tools; fi
     as_root env DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install \
-        xfce4 xfce4-terminal tigervnc-standalone-server tigervnc-common dbus-x11 \
-        xauth x11-utils pulseaudio-utils openssl iproute2 ca-certificates curl fonts-dejavu-core "$AUDIO_PACKAGE"
+        xfce4 xfce4-terminal tigervnc-standalone-server tigervnc-common "$VNC_TOOLS_PACKAGE" dbus-x11 \
+        xauth x11-utils pulseaudio-utils openssl iproute2 ca-certificates curl fonts-dejavu-core "$AUDIO_PACKAGE" </dev/null
 elif [[ "$FAMILY" == *rhel* || "$FAMILY" == *fedora* || "$FAMILY" == *rocky* || "$FAMILY" == *almalinux* ]]; then
     command -v dnf >/dev/null || die 'RHEL-family setup requires dnf and an enabled XFCE repository (usually EPEL/CRB).'
     if [[ "$FAMILY" != *fedora* ]]; then
-        as_root dnf -y install epel-release || printf 'Enable EPEL/CRB for your distribution if XFCE packages are unavailable.\n' >&2
+        as_root dnf -y install epel-release </dev/null || printf 'Enable EPEL/CRB for your distribution if XFCE packages are unavailable.\n' >&2
     fi
     as_root dnf -y install tigervnc-server xfce4-session xfce4-panel xfce4-settings xfce4-terminal \
-        xfdesktop xfwm4 Thunar dbus-x11 xorg-x11-xauth xorg-x11-utils pulseaudio-utils \
-        openssl iproute curl ca-certificates dejavu-sans-fonts "$AUDIO_PACKAGE" || die 'Package installation failed; check EPEL/CRB availability. No VNC firewall rule is needed.'
+        xfdesktop xfwm4 Thunar dbus-x11 xorg-x11-xauth xdpyinfo pulseaudio-utils \
+        openssl iproute curl ca-certificates dejavu-sans-fonts "$AUDIO_PACKAGE" </dev/null || die 'Package installation failed; check EPEL/CRB availability. No VNC firewall rule is needed.'
 else die "Unsupported distribution: ${PRETTY_NAME:-$FAMILY}. Use Debian/Ubuntu, or prepare TigerVNC and XFCE manually."; fi
 
 VNC_SERVER="$(command -v Xtigervnc || command -v Xvnc)" || die 'TigerVNC X server was not installed.'
@@ -144,7 +147,9 @@ if [[ ! -s "$PASSWORD_FILE" ]] || $RESET_PASSWORD; then
     NEW_PASSWORD="$(openssl rand -base64 6)"
     printf '%s\n' "$NEW_PASSWORD" | as_user "$VNC_PASSWD" -f | write_user_file "$PASSWORD_FILE" 600
     RESULT_PASSWORD="\"$NEW_PASSWORD\""
-    printf '\nNew VNC password (shown only this time): %s\nSave it; Circe asks for it on your first connection.\n\n' "$NEW_PASSWORD"
+    if [[ -t 1 ]]; then
+        printf '\nNew VNC password (shown only this time): %s\nSave it; Circe asks for it on your first connection.\n\n' "$NEW_PASSWORD"
+    fi
     unset NEW_PASSWORD
 else
     as_user chmod 600 "$PASSWORD_FILE"
@@ -174,7 +179,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 0' TERM INT
-"$VNC_SERVER" "$DISPLAY" -localhost yes -SecurityTypes VncAuth -PasswordFile "$HOME/.vnc/passwd" \
+"$VNC_SERVER" "$DISPLAY" -localhost=1 -interface 127.0.0.1 -SecurityTypes VncAuth -PasswordFile "$HOME/.vnc/passwd" \
     -rfbport "$((5900 + DISPLAY_NUMBER))" -geometry "$GEOMETRY" -depth 24 -nolisten tcp -auth "$XAUTHORITY" -desktop "Circe — $(hostname)" &
 X_PID=$!
 ready=false
@@ -272,3 +277,6 @@ printf 'Audio source: circe.monitor (parec --device=circe.monitor --format=s16le
 printf 'No VNC firewall rule or public VNC address is needed. Existing SSH/IAP access is required.\n'
 # Password is JSON-safe base64, and is returned only when this run created it.
 printf 'CIRCE_SETUP_RESULT {"display":%d,"password":%s,"audio":true}\n' "$DISPLAY_NUMBER" "$RESULT_PASSWORD"
+
+}
+main "$@"; exit $?

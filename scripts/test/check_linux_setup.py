@@ -22,6 +22,9 @@ elif name == 'sudo':
     while args[0] in ('-n','--'): args.pop(0)
     os.execvp(args[0], args)
 elif name == 'runuser': os.execvp(args[3], args[3:])
+elif name in ('apt-get','dnf'):
+    assert sys.stdin.buffer.read() == b'', 'Package command must not receive script stdin'
+elif name == 'apt-cache': sys.exit(1 if os.environ.get('FIXTURE_NO_TOOLS') else 0)
 elif name == 'systemctl':
     if 'is-active' in args or 'is-enabled' in args: sys.exit(1 if os.environ.get('FIXTURE_DOWN') else 0)
 elif name == 'loginctl':
@@ -64,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
     release.write_text('ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu fixture"\n')
     script = temp / 'setup.sh'
     script.write_text(SOURCE.read_text().replace('/etc/os-release', str(release)).replace('RUNTIME="/run/user/$TARGET_UID"', f'RUNTIME="{runtime}"'))
-    for name in ['uname', 'getent', 'sudo', 'runuser', 'apt-get', 'dnf', 'systemctl', 'loginctl', 'ss', 'pactl', 'parec', 'Xtigervnc', 'tigervncpasswd', 'dbus-run-session', 'xfce4-session', 'xdpyinfo', 'xauth', 'xset', 'curl', 'hostname']:
+    for name in ['uname', 'getent', 'sudo', 'runuser', 'apt-get', 'apt-cache', 'dnf', 'systemctl', 'loginctl', 'ss', 'pactl', 'parec', 'Xtigervnc', 'tigervncpasswd', 'dbus-run-session', 'xfce4-session', 'xdpyinfo', 'xauth', 'xset', 'curl', 'hostname']:
         command = bin_dir / name
         command.write_text(MOCK)
         command.chmod(0o755)
@@ -78,7 +81,7 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
         return result
 
     result = run()
-    assert 'New VNC password (shown only this time)' in result.stdout
+    assert 'New VNC password' not in result.stdout, 'Non-interactive setup must not put a password in progress output'
     report = json.loads(result.stdout.split('CIRCE_SETUP_RESULT ', 1)[1])
     assert report['display'] == 1 and len(report['password']) == 8 and report['audio'] is True
     assert 'Destination: fixture@vm.example.net' in result.stdout
@@ -92,7 +95,13 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
     assert password.read_bytes() == original
     run('--reset-password')
     assert password.read_bytes() != original
-    print('Install / rerun / explicit password reset passed; password file permissions verified.')
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert any(call[0] == 'apt-get' and 'install' in call and 'tigervnc-tools' in call for call in calls)
+    piped = subprocess.run(['/bin/bash', '-s', '--', '--user', 'fixture'], input=script.read_text(), env=environment, text=True, capture_output=True, timeout=15)
+    assert piped.returncode == 0, piped.stderr
+    assert 'CIRCE_SETUP_RESULT' in piped.stdout
+    run(extra={'FIXTURE_NO_TOOLS': '1'})
+    print('Install / rerun / explicit password reset / piped stdin passed; password permissions and optional TigerVNC tools verified.')
 
     helpers = home / '.local/libexec/circe'
     for helper in helpers.iterdir():
@@ -107,7 +116,8 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
             time.sleep(0.05)
         else: raise AssertionError('Desktop did not start')
         invocation = next(call for call in calls if call[0] == 'Xtigervnc')
-        for flag, value in [('-localhost', 'yes'), ('-SecurityTypes', 'VncAuth'), ('-rfbport', '5901'), ('-nolisten', 'tcp')]:
+        assert '-localhost=1' in invocation and 'yes' not in invocation
+        for flag, value in [('-interface', '127.0.0.1'), ('-SecurityTypes', 'VncAuth'), ('-rfbport', '5901'), ('-nolisten', 'tcp')]:
             assert invocation[invocation.index(flag) + 1] == value
         assert invocation[invocation.index('-PasswordFile') + 1] == str(password)
     finally:
@@ -137,7 +147,7 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
     assert 'Wants=pipewire-pulse.socket' in (home / '.config/systemd/user/circe-audio.service').read_text()
     release.write_text('ID=rocky\nID_LIKE="rhel centos fedora"\n')
     run()
-    assert any(json.loads(line)[0] == 'dnf' for line in log.read_text().splitlines())
+    assert any(json.loads(line)[0] == 'dnf' and 'xdpyinfo' in json.loads(line) for line in log.read_text().splitlines())
     run('--display', '0', success=False)
     run('--display', '100', success=False)
     run('--geometry', '10x10', success=False)
