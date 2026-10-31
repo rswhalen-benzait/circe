@@ -100,6 +100,10 @@ JSON on stdout on success, and no FLV.
 | 77 | X display / authentication unavailable |
 | 75 | Live capture or encoding failure |
 
+Cancellation sends TERM, allows about one second for shutdown, then sends KILL
+and reaps the encoder if it is still running. It does not wait indefinitely for
+FFmpeg to finalize a discarded stream.
+
 SSH may return its own transport status. The client uses its cancellation state
 to distinguish intentional teardown from an unexpected stream end. Desktop resize
 requires a fresh helper process and decoder generation; VNC displays pixels during
@@ -129,6 +133,6 @@ CIRCE_TEST_FFMPEG=/path/to/ffmpeg python3 scripts/test/check_linux_video_real.py
 ```
 
 It verifies complete FLV/AVCC frames, color conversion, no composition reordering,
-and preserved capture-time gaps. It does not benchmark GCP CPUs, validate Linux
+preserved capture-time gaps, and cancellation of a real live encoder. It does not benchmark GCP CPUs, validate Linux
 XShm behavior, or test a physical NVIDIA device. Actual host and WAN measurements
 remain necessary before claiming 1080p60 performance.

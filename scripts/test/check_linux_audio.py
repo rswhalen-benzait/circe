@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / 'scripts/linux/circe-audio.sh'
 OGG = b'OggS\x00\x02fixture'
 MOCK = r'''#!/usr/bin/env python3
-import json,os,pathlib,sys
+import json,os,pathlib,sys,signal,time
 name=pathlib.Path(sys.argv[0]).name;args=sys.argv[1:]
 with open(os.environ['FIXTURE_LOG'],'a') as f: f.write(json.dumps({'command':name,'args':args,'pulse':os.environ.get('PULSE_SERVER')})+'\n')
 if name=='uname': print('Linux')
@@ -31,7 +31,10 @@ elif name=='ffmpeg':
     else:
         sys.stdout.buffer.write(b'OggS\x00\x02fixture');sys.stdout.buffer.flush()
         if os.environ.get('FIXTURE_HOLD'):
+            if os.environ.get('FIXTURE_IGNORE_TERM'): signal.signal(signal.SIGTERM,signal.SIG_IGN)
             pathlib.Path(os.environ['FIXTURE_PID']).write_text(str(os.getpid()))
+            if os.environ.get('FIXTURE_IGNORE_TERM'):
+                while True: time.sleep(1)
             os.execl('/bin/sleep','sleep','60')
         sys.exit(int(os.environ.get('FIXTURE_EXIT','0')))
 '''
@@ -70,20 +73,23 @@ with tempfile.TemporaryDirectory(prefix='circe-audio-check.') as directory:
     for args in [('--bitrate-kbps','31'),('--bitrate-kbps','257'),('--bitrate-kbps','x'),('--bitrate-kbps',),('--unknown',)]:
         p,_=run(*args,code=64);assert not p.stdout
     print('All exit-69 paths emit zero stdout; live failures exit 75 without appending another format.')
-    pid_file=temp/'child.pid';child=None
-    process=subprocess.Popen(['/bin/bash',str(HELPER)],env={**env,'FIXTURE_HOLD':'1','FIXTURE_PID':str(pid_file)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
-    try:
-        deadline=time.time()+4
-        while not pid_file.exists() and time.time()<deadline: time.sleep(0.03)
-        assert pid_file.exists();child=int(pid_file.read_text())
-        process.terminate();process.wait(timeout=3);assert process.returncode==0
-        try: os.kill(child,0)
-        except ProcessLookupError: child=None
-        assert child is None,'Cancelled helper left its encoder running'
-    finally:
-        if process.poll() is None: os.killpg(process.pid,signal.SIGKILL);process.wait()
-        if child:
-            try: os.kill(child,signal.SIGKILL)
-            except ProcessLookupError: pass
-    print('Cancellation reaps the owned encoder.')
+    for stubborn in (False,True):
+        pid_file=temp/f'child-{stubborn}.pid';child=None
+        extra={'FIXTURE_IGNORE_TERM':'1'} if stubborn else {}
+        process=subprocess.Popen(['/bin/bash',str(HELPER)],env={**env,**extra,'FIXTURE_HOLD':'1','FIXTURE_PID':str(pid_file)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            deadline=time.time()+4
+            while not pid_file.exists() and time.time()<deadline: time.sleep(0.03)
+            assert pid_file.exists();child=int(pid_file.read_text())
+            started=time.monotonic();process.terminate();process.wait(timeout=2.5)
+            assert process.returncode==0 and time.monotonic()-started<2
+            try: os.kill(child,0)
+            except ProcessLookupError: child=None
+            assert child is None,'Cancelled helper left its encoder running'
+        finally:
+            if process.poll() is None: os.killpg(process.pid,signal.SIGKILL);process.wait()
+            if child:
+                try: os.kill(child,signal.SIGKILL)
+                except ProcessLookupError: pass
+    print('Cancellation reaps normal and TERM-ignoring encoders within two seconds.')
 print('Linux audio helper fixtures passed without real audio devices or network access.')

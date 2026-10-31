@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 
 ROOT=Path(__file__).resolve().parents[2]
 REAL=os.environ.get('CIRCE_TEST_FFMPEG') or shutil.which('ffmpeg')
@@ -80,4 +81,30 @@ with tempfile.TemporaryDirectory(prefix='circe-video-real.') as directory:
     pixel=decoded.stdout[:3]
     assert all(abs(a-b)<=5 for a,b in zip(pixel,(240,20,30))),tuple(pixel)
     print(f'Explicit desktop color conversion decoded first pixel as {tuple(pixel)} (source 240,20,30).')
+    # The live shim execs FFmpeg (no intermediary writer). A finite source does
+    # not exercise FFmpeg's occasionally stalled first-signal shutdown.
+    live_env={**env,'PATH':f'{ROOT}/scripts/test/realvideo:'+env['PATH']}
+    with tempfile.TemporaryFile() as stream:
+        live=subprocess.Popen(['/bin/bash',str(ROOT/'scripts/linux/circe-video.sh'),'--encoder','x264'],env=live_env,stdout=stream,stderr=subprocess.PIPE,start_new_session=True)
+        children=[]
+        try:
+            deadline=time.monotonic()+8
+            while os.fstat(stream.fileno()).st_size<1024 and live.poll() is None and time.monotonic()<deadline: time.sleep(0.03)
+            assert os.fstat(stream.fileno()).st_size>=1024,'Live FFmpeg did not start'
+            children=[int(pid) for pid in subprocess.check_output(['pgrep','-P',str(live.pid)],text=True).split()]
+            assert children,'Expected an owned live FFmpeg process'
+            started=time.monotonic();live.terminate();live.wait(timeout=2.5)
+            elapsed=time.monotonic()-started
+            assert live.returncode==0 and elapsed<2,(live.returncode,elapsed)
+            for pid in children:
+                try: os.kill(pid,0)
+                except ProcessLookupError: continue
+                raise AssertionError(f'Cancelled wrapper left real FFmpeg {pid} running')
+            children=[]
+            print(f'Real FFmpeg cancellation reaped wrapper and encoder in {elapsed:.2f} s.')
+        finally:
+            if live.poll() is None: os.killpg(live.pid,signal.SIGKILL);live.wait()
+            for pid in children:
+                try: os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError: pass
 print('This verifies encoding/muxing/timestamp behavior, not Linux XShm capture or GPU performance.')

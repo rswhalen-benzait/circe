@@ -70,7 +70,19 @@ CHILD_PID=
 # shellcheck disable=SC2329
 cleanup() {
     trap - EXIT
-    if [[ -n "$CHILD_PID" ]]; then kill "$CHILD_PID" 2>/dev/null || true; wait "$CHILD_PID" 2>/dev/null || true; fi
+    trap '' HUP INT TERM
+    if [[ -n "$CHILD_PID" ]]; then
+        kill -TERM "$CHILD_PID" 2>/dev/null || true
+        local attempt
+        for ((attempt=0; attempt<10; attempt++)); do
+            kill -0 "$CHILD_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        # FFmpeg can stall during graceful shutdown. This stream is being
+        # discarded; do not wait indefinitely for a container trailer.
+        if kill -0 "$CHILD_PID" 2>/dev/null; then kill -KILL "$CHILD_PID" 2>/dev/null || true; fi
+        wait "$CHILD_PID" 2>/dev/null || true
+    fi
     rm -rf "$WORK"
 }
 trap cleanup EXIT

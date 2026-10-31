@@ -51,8 +51,8 @@ human-readable stderr message. Exit codes:
 Exit 69 is reserved for preflight failures. It is safe for the calling SSH
 command to start `parec` on that status. After live encoding begins, the helper
 never returns 69, appends PCM, or restarts a container in place. The client must
-start a fresh channel for recovery. Cancellation terminates and reaps the owned
-encoder process.
+start a fresh channel for recovery. Cancellation sends TERM, waits about one
+second, then sends KILL if needed and reaps the owned encoder process.
 
 The self-contained installer embeds this helper alongside the video helper.
 `embed-video-wrapper.py` updates both payloads; bundling rejects stale copies.

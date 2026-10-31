@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = ROOT / 'scripts/linux/circe-video.sh'
 FLV_HEADER = b'FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00'
 MOCK = r'''#!/usr/bin/env python3
-import json,os,pathlib,sys
+import json,os,pathlib,sys,signal,time
 name=pathlib.Path(sys.argv[0]).name
 args=sys.argv[1:]
 with open(os.environ['FIXTURE_LOG'],'a') as f: f.write(json.dumps({'command':name,'args':args,'xauthority':os.environ.get('XAUTHORITY')})+'\n')
@@ -34,7 +34,10 @@ elif name=='ffmpeg':
     else:
         sys.stdout.buffer.write(b'FLV\x01\x01\x00\x00\x00\x09\x00\x00\x00\x00');sys.stdout.buffer.flush()
         if os.environ.get('FIXTURE_HOLD'):
+            if os.environ.get('FIXTURE_IGNORE_TERM'): signal.signal(signal.SIGTERM,signal.SIG_IGN)
             pathlib.Path(os.environ['FIXTURE_PID']).write_text(str(os.getpid()))
+            if os.environ.get('FIXTURE_IGNORE_TERM'):
+                while True: time.sleep(1)
             os.execl('/bin/sleep','sleep','60')
         sys.exit(int(os.environ.get('FIXTURE_LIVE_EXIT','0')))
 '''
@@ -108,23 +111,25 @@ with tempfile.TemporaryDirectory(prefix='circe-video-check.') as directory:
     assert p.stdout==FLV_HEADER and len([call for call in calls if 'x11grab' in call['args']])==1
     print('Invalid arguments, X access failure, missing capture support, and live encoder failure exit codes passed.')
 
-    pid_file=temp/'child.pid'
-    wrapper=subprocess.Popen(['/bin/bash',str(WRAPPER)],env={**env,'FIXTURE_HOLD':'1','FIXTURE_PID':str(pid_file)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
-    child=None
-    try:
-        deadline=time.time()+4
-        while not pid_file.exists() and time.time()<deadline: time.sleep(0.03)
-        assert pid_file.exists(),'Live encoder did not start'
-        child=int(pid_file.read_text())
-        wrapper.terminate();wrapper.wait(timeout=3)
-        assert wrapper.returncode==0
-        try: os.kill(child,0)
-        except ProcessLookupError: child=None
-        assert child is None,'Cancelled wrapper left its encoder running'
-    finally:
-        if wrapper.poll() is None: os.killpg(wrapper.pid,signal.SIGKILL);wrapper.wait()
-        if child:
-            try: os.kill(child,signal.SIGKILL)
-            except ProcessLookupError: pass
-    print('Cancellation terminates and reaps the owned encoder process.')
+    for stubborn in (False,True):
+        pid_file=temp/f'child-{stubborn}.pid'
+        extra={'FIXTURE_IGNORE_TERM':'1'} if stubborn else {}
+        wrapper=subprocess.Popen(['/bin/bash',str(WRAPPER)],env={**env,**extra,'FIXTURE_HOLD':'1','FIXTURE_PID':str(pid_file)},stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        child=None
+        try:
+            deadline=time.time()+4
+            while not pid_file.exists() and time.time()<deadline: time.sleep(0.03)
+            assert pid_file.exists(),'Live encoder did not start'
+            child=int(pid_file.read_text())
+            started=time.monotonic();wrapper.terminate();wrapper.wait(timeout=2.5)
+            assert wrapper.returncode==0 and time.monotonic()-started<2
+            try: os.kill(child,0)
+            except ProcessLookupError: child=None
+            assert child is None,'Cancelled wrapper left its encoder running'
+        finally:
+            if wrapper.poll() is None: os.killpg(wrapper.pid,signal.SIGKILL);wrapper.wait()
+            if child:
+                try: os.kill(child,signal.SIGKILL)
+                except ProcessLookupError: pass
+    print('Cancellation reaps normal and TERM-ignoring encoders within two seconds.')
 print('Linux video wrapper fixtures passed; no real X display, GPU, network, or cloud resources used.')
