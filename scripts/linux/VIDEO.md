@@ -108,13 +108,14 @@ the user's SSH configuration normally enables connection sharing.
 
 ## Development and verification
 
-`circe-video.sh` is canonical. The installer embeds it so a single uploaded script
-can install everything without a public download URL. After editing the helper:
+`circe-video.sh` is canonical. The installer embeds it alongside `circe-audio.sh`
+so a single uploaded script can install everything without a public download URL.
+After editing either helper:
 
 ```sh
 python3 scripts/linux/embed-video-wrapper.py
 python3 scripts/linux/embed-video-wrapper.py --check
-shellcheck scripts/linux/circe-video.sh scripts/linux/setup-circe-host.sh
+shellcheck scripts/linux/circe-video.sh scripts/linux/circe-audio.sh scripts/linux/setup-circe-host.sh
 python3 scripts/test/check_linux_video.py
 python3 scripts/test/check_linux_setup.py
 ```

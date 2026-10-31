@@ -104,8 +104,9 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
     print('Install / rerun / explicit password reset / piped stdin passed; password permissions and optional TigerVNC tools verified.')
 
     helpers = home / '.local/libexec/circe'
-    assert (helpers / 'video').read_text() == (ROOT / 'scripts/linux/circe-video.sh').read_text()
-    assert (helpers / 'video').stat().st_mode & 0o777 == 0o700
+    for media in ('video', 'audio'):
+        assert (helpers / media).read_text() == (ROOT / f'scripts/linux/circe-{media}.sh').read_text()
+        assert (helpers / media).stat().st_mode & 0o777 == 0o700
     for helper in helpers.iterdir():
         subprocess.run(['/bin/bash', '-n', str(helper)], check=True)
         subprocess.run(['shellcheck', str(helper)], check=True)

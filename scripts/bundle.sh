@@ -26,6 +26,7 @@ cp Resources/Circe.icns "$APP/Contents/Resources/Circe.icns"
 mkdir -p "$APP/Contents/Resources/Linux"
 cp scripts/linux/setup-circe-host.sh "$APP/Contents/Resources/Linux/setup-circe-host.sh"
 cp scripts/linux/circe-video.sh "$APP/Contents/Resources/Linux/video"
+cp scripts/linux/circe-audio.sh "$APP/Contents/Resources/Linux/audio"
 # SwiftPM resource bundles are siblings of the executable, when targets use resources.
 shopt -s nullglob
 for RESOURCE_BUNDLE in "$BINARY_DIRECTORY"/*.bundle; do

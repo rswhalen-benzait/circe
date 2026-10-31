@@ -4,9 +4,10 @@ Use a Debian or Ubuntu VM with systemd, an ordinary Linux account, and sudo acce
 The installer creates a separate XFCE desktop on display `:1`, keeps TigerVNC on
 loopback only, and provides headless audio through PulseAudio or an existing
 PipeWire-pulse server. RHEL/Rocky/Fedora are best-effort; XFCE may require EPEL/CRB.
-Setup also attempts to install FFmpeg and the smooth-video helper. Video is
-optional: a missing encoder keeps VNC usable. See [smooth video](VIDEO.md) for
-CPU defaults, NVENC probing, diagnostics, and the FLV interface.
+Setup also attempts to install FFmpeg, the smooth-video helper, and a compressed
+audio helper. These are optional: unavailable encoders keep VNC and PCM audio
+usable. See [smooth video](VIDEO.md) for CPU defaults and the FLV interface, and
+[compressed audio](AUDIO.md) for the Ogg/Opus contract and diagnostics.
 
 ## Install on the VM
 
@@ -88,6 +89,8 @@ ss -ltn 'sport = :5901'
 `--check` is read-only and exits nonzero if a service, boot setting, loopback
 listener, or audio monitor is missing. Any non-loopback listener is reported as
 unsafe. Expected listeners are `127.0.0.1:5901` and/or `[::1]:5901`.
+Optional media capability lines report H.264 and Opus availability without
+failing an otherwise healthy VNC/PCM host.
 
 Use `--display 2` if `:1` already belongs to another desktop; choose display `2`
 in Circe too. `--geometry 1920x1080` sets the initial size; Circe can request a
@@ -95,7 +98,9 @@ different size when the server supports remote resize. Logging out inside XFCE
 ends that desktop session; reconnect after restarting the service with
 `systemctl --user restart circe-desktop`.
 
-For audio, Circe records the `circe.monitor` source over a second SSH channel:
+For audio, Circe records the default output monitor (the `circe` sink after
+setup) over another SSH channel, using the Opus helper when available and PCM
+otherwise. To diagnose PCM capture directly:
 
 ```sh
 XDG_RUNTIME_DIR=/run/user/$(id -u) parec --device=circe.monitor --format=s16le --rate=48000 --channels=2 --raw > /tmp/circe-audio.pcm
