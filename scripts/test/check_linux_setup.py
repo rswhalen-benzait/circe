@@ -18,7 +18,9 @@ args=sys.argv[1:]
 with open(os.environ['FIXTURE_LOG'], 'a') as f: f.write(json.dumps([name]+args)+'\n')
 if name == 'uname': print('Linux')
 elif name == 'getent': print(f"fixture:x:{os.environ['FIXTURE_UID']}:20:Fixture:{os.environ['FIXTURE_HOME']}:/bin/bash")
-elif name == 'sudo': os.execvp(args[1] if args[0]=='--' else args[0], args[1:] if args[0]=='--' else args)
+elif name == 'sudo':
+    while args[0] in ('-n','--'): args.pop(0)
+    os.execvp(args[0], args)
 elif name == 'runuser': os.execvp(args[3], args[3:])
 elif name == 'systemctl':
     if 'is-active' in args or 'is-enabled' in args: sys.exit(1 if os.environ.get('FIXTURE_DOWN') else 0)
@@ -77,6 +79,8 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
 
     result = run()
     assert 'New VNC password (shown only this time)' in result.stdout
+    report = json.loads(result.stdout.split('CIRCE_SETUP_RESULT ', 1)[1])
+    assert report['display'] == 1 and len(report['password']) == 8 and report['audio'] is True
     assert 'Destination: fixture@vm.example.net' in result.stdout
     password = home / '.vnc/passwd'
     original = password.read_bytes()
@@ -84,6 +88,7 @@ with tempfile.TemporaryDirectory(prefix='circe-linux-setup.') as directory:
     assert 'Wants=pulseaudio.socket' in (home / '.config/systemd/user/circe-audio.service').read_text()
     result = run()
     assert 'Keeping the existing VNC password' in result.stdout and 'New VNC password' not in result.stdout
+    assert json.loads(result.stdout.split('CIRCE_SETUP_RESULT ', 1)[1])['password'] is None
     assert password.read_bytes() == original
     run('--reset-password')
     assert password.read_bytes() != original

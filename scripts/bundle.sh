@@ -22,6 +22,8 @@ APP="$STAGING_DIRECTORY/Circe.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY_DIRECTORY/Circe" "$APP/Contents/MacOS/Circe"
 cp Resources/Circe.icns "$APP/Contents/Resources/Circe.icns"
+mkdir -p "$APP/Contents/Resources/Linux"
+cp scripts/linux/setup-circe-host.sh "$APP/Contents/Resources/Linux/setup-circe-host.sh"
 # SwiftPM resource bundles are siblings of the executable, when targets use resources.
 shopt -s nullglob
 for RESOURCE_BUNDLE in "$BINARY_DIRECTORY"/*.bundle; do
