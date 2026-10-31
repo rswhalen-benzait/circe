@@ -2,7 +2,7 @@
 # End-to-end checks for Circe's Linux / cloud path without a real VM:
 # fake ssh (maps -W onto nc) + fake TigerVNC (VeNCrypt, Tight/JPEG, resize, UTF-8 clipboard) + fake parec.
 set -u
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 swift build --product circe-cli >/dev/null 2>&1 || { echo "build failed"; exit 1; }
 CLI=.build/debug/circe-cli
 TMP=$(mktemp -d); trap 'pkill -f fake_tigervnc.py; rm -rf "$TMP"' EXIT
