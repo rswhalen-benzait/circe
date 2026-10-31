@@ -14,6 +14,7 @@ raw = b"".join(b"\0" + b"\x00\x00\xff" * w for _ in range(h))
 c = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
 open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + c(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + c(b"IDAT", zlib.compress(raw)) + c(b"IEND", b""))
 PY
+swift build --product circe-selftest >/dev/null 2>&1 && .build/debug/circe-selftest --write-test-ogg "$TMP/tone.ogg" || { echo "ogg fixture failed"; exit 1; }
 swift scripts/test/make-flv.swift "$TMP/desk.flv" 120 320x240 >/dev/null || { echo "make-flv failed"; exit 1; }
 sips -s format jpeg -s formatOptions 90 "$TMP/blue.png" --out "$TMP/blue.jpg" >/dev/null
 python3 scripts/test/fake_tigervnc.py 5921 plain "$TMP/blue.jpg" > "$TMP/plain.out" 2>/dev/null &
@@ -40,6 +41,10 @@ check "video recovers after the stream dies" "mismatches=0" \
   env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_EXIT_AFTER=1 FAKE_VIDEO_RUN=$$ $CLI vnc --ssh t@vm --display 22 --password x --seconds 5 --expect-video
 check "video that falls behind restarts at a lower bitrate" "videoLimit=3600 mismatches=0" \
   env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_LAG=1 $CLI vnc --ssh t@vm --display 22 --password x --seconds 6 --expect-video
+check "Opus audio from the audio helper" "mismatches=0" \
+  env FAKE_AUDIO_OGG="$TMP/tone.ogg" $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --expect-audio --expect-audio-encoding opus
+check "no audio helper falls back to raw PCM (parec)" "mismatches=0" \
+  $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --expect-audio --expect-audio-encoding pcm16
 check "Plain auth refused without a tunnel" "unencrypted" $CLI vnc 127.0.0.1:5921
 check "wrong password is reported" "Authentication failed" $CLI vnc --ssh t@vm --display 21 --user circe --password nope
 check "ssh key refused is explained" "SSH refused the login" env FAKE_SSH_FAIL="Permission denied (publickey)." $CLI vnc --ssh t@vm --display 21

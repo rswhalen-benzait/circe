@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+# Fake Circe audio helper: replays FAKE_AUDIO_OGG (Ogg Opus) in real time, looping its audio pages.
+# Unset FAKE_AUDIO_OGG = "can't run here" (exit 69 before any output) → the caller falls back to parec.
+import os, sys, time
+path = os.environ.get("FAKE_AUDIO_OGG")
+if not path:
+    print("circe-audio: libopus unavailable", file=sys.stderr); sys.exit(69)
+data = open(path, "rb").read()
+pages, i = [], 0
+while i < len(data):
+    n = data[i + 26]; size = 27 + n + sum(data[i + 27:i + 27 + n]); pages.append(data[i:i + size]); i += size
+out = sys.stdout.buffer
+out.write(pages[0] + pages[1]); out.flush()  # OpusHead, OpusTags
+t0, k = time.time(), 0
+while True:
+    out.write(pages[2 + k % (len(pages) - 2)]); out.flush()  # 5 × 10 ms packets per page
+    k += 1
+    time.sleep(max(0, t0 + k * 0.05 - time.time()))

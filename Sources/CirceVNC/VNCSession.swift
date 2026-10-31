@@ -283,45 +283,62 @@ public final class VNCSession: ObservableObject, Identifiable {
 
     // MARK: Remote audio over SSH
 
-    /// Records the default PulseAudio/PipeWire output's monitor as raw 48 kHz stereo PCM.
-    /// `@DEFAULT_MONITOR@` is resolved by PulseAudio and PipeWire-pulse themselves (locale-independent).
-    static let remoteAudioCommand =
-        "exec parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=48000 --channels=2 --raw --latency-msec=20"
+    /// Circe's audio helper (Ogg/Opus, ~128 kb/s) when installed; it exits 69 before writing anything
+    /// if it can't run, and then — or on machines set up before it existed — `parec` sends raw 48 kHz
+    /// stereo PCM. `@DEFAULT_MONITOR@` is resolved by PulseAudio and PipeWire-pulse themselves
+    /// (locale-independent).
+    static let remoteAudioCommand = """
+        h="$HOME/.local/libexec/circe/audio"; if [ -x "$h" ]; then "$h"; s=$?; [ $s -eq 69 ] || exit $s; fi; \
+        exec parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=48000 --channels=2 --raw --latency-msec=20
+        """
+
+    /// How remote audio is arriving (diagnostics / tests).
+    public private(set) var audioEncoding: AudioFormatDescriptor.Encoding?
 
     private func updateAudio() {
         guard remoteAudioEnabled, state == .streaming, tunnel.isTunneled else { stopAudio(); return }
         guard audioPipe == nil, let (exe, args) = try? tunnel.remoteCommand(Self.remoteAudioCommand) else { return }
-        let fmt = AudioFormatDescriptor(encoding: .pcm16, sampleRate: 48_000, channels: 2)
-        let player = AudioPlayer(format: fmt, targetLatency: 0.080) // internet jitter headroom
-        player.setMuted(audioMuted)
-        player.start()
         let pipe = ProcessPipe(executable: exe, arguments: args)
-        guard (try? pipe.start()) != nil else { player.stop(); return }
-        audio = player
+        guard (try? pipe.start()) != nil else { return }
         audioPipe = pipe
+        let muted = audioMuted
         let pipeRef = pipe
         let reader = Thread { [weak self, weak pipe] in
-            var carry = Data()
-            var announced = false
+            var stream = RemoteAudioStream()
+            var player: AudioPlayer?
             while let pipe {
                 let chunk = pipe.read()
                 if chunk.isEmpty { break }
-                carry.append(chunk)
-                let usable = carry.count - carry.count % 4 // whole stereo frames only
-                guard usable > 0 else { continue }
-                player.enqueue(AudioPacket(captureMicros: Clock.micros(), frames: UInt32(usable / 4), data: carry.prefix(usable)))
-                carry = Data(carry.dropFirst(usable))
-                if !announced {
-                    announced = true
-                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.audioRetries = 0 } }
-                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.audioActive = true } }
+                guard let payloads = try? stream.feed(chunk) else { break }
+                if player == nil, stream.kind != .unknown {
+                    let encoding: AudioFormatDescriptor.Encoding = stream.kind == .opus ? .opus : .pcm16
+                    let p = AudioPlayer(format: AudioFormatDescriptor(encoding: encoding, sampleRate: 48_000, channels: 2),
+                                        targetLatency: 0.080) // internet jitter headroom
+                    p.setMuted(muted)
+                    p.start()
+                    player = p
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            guard let self, self.audioPipe === pipeRef else { p.stop(); return }
+                            p.setMuted(self.audioMuted)
+                            self.audio = p
+                            self.audioEncoding = encoding
+                            self.audioRetries = 0
+                            self.audioActive = true
+                        }
+                    }
+                }
+                for d in payloads {
+                    let frames = stream.kind == .opus ? 480 : d.count / 4
+                    player?.enqueue(AudioPacket(captureMicros: Clock.micros(), frames: UInt32(frames), data: d))
                 }
             }
             // Stream ended (audio server restarted, channel dropped…): clear it and try again shortly.
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self, self.audioPipe === pipeRef else { return }
+                    guard let self, self.audioPipe === pipeRef else { player?.stop(); return }
                     self.stopAudio()
+                    player?.stop()
                     self.audioRetries += 1
                     guard self.audioRetries <= 5 else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.updateAudio() }

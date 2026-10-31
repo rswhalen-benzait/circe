@@ -124,7 +124,7 @@ func runConnect() {
 
 /// circe-cli vnc <address> | --ssh user@host [--ssh-port N] | --gcloud INSTANCE --zone Z [--project P] [--no-iap]
 ///   [--display N] [--seconds N] [--user U --password P] [--expect x,y=0xRRGGBB ...] [--tolerance N]
-///   [--resize WxH] [--expect-clipboard TEXT] [--expect-audio] [--expect-video] [--no-video]
+///   [--resize WxH] [--expect-clipboard TEXT] [--expect-audio] [--expect-audio-encoding pcm16|opus] [--expect-video] [--no-video]
 @MainActor
 func runVNC() {
     let display = value("--display").flatMap(Int.init) ?? 1
@@ -190,6 +190,9 @@ func runVNC() {
                 bad += 1; log("clipboard: got \(session.lastRemoteClipboard ?? "nil")")
             }
             if args.contains("--expect-audio"), !session.audioActive { bad += 1; log("audio: not playing") }
+            if let enc = value("--expect-audio-encoding"), session.audioEncoding?.rawValue != enc {
+                bad += 1; log("audio encoding: \(session.audioEncoding?.rawValue ?? "none"), wanted \(enc)")
+            }
             if args.contains("--expect-video") {
                 if case .h264 = session.videoMode {} else { bad += 1; log("video: \(session.videoMode) \(session.videoFallbackReason ?? "")") }
                 if session.videoDecodeFailed { bad += 1; log("video: decoder failed") }

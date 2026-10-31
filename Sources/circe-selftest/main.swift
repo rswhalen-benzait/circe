@@ -387,6 +387,68 @@ extension FLVTests {
     }
 }
 
+struct OggTests {
+    static func page(_ packets: [Data], continued: Bool = false, open: Bool = false, seq: UInt32) -> Data {
+        var lacing: [UInt8] = []
+        for (i, p) in packets.enumerated() {
+            var n = p.count
+            while n >= 255 { lacing.append(255); n -= 255 }
+            if !(open && i == packets.count - 1) { lacing.append(UInt8(n)) } // `open`: last packet continues
+        }
+        var d = Data("OggS".utf8) + [0, continued ? 1 : 0] + Data(count: 8) + [7, 0, 0, 0]
+        d += [UInt8(seq & 255), 0, 0, 0] + Data(count: 4) + [UInt8(lacing.count)] + lacing
+        for p in packets { d += p }
+        return d
+    }
+
+    /// 440 Hz for `seconds` as an Ogg Opus stream (headers + 10 ms packets, 5 per page).
+    static func opusStream(seconds: Double) -> Data {
+        let enc = OpusEncoder()!
+        let n = Int(48_000 * seconds)
+        var pcm = [Float](repeating: 0, count: n * 2)
+        for i in 0..<n { pcm[i * 2] = sin(2 * .pi * 440 * Float(i) / 48_000) * 0.5; pcm[i * 2 + 1] = pcm[i * 2] }
+        let packets = enc.encode(interleaved: pcm)
+        var ogg = page([Data("OpusHead".utf8) + Data([1, 2, 0x38, 1, 0x80, 0xBB, 0, 0, 0, 0, 0])], seq: 0)
+        ogg += page([Data("OpusTags".utf8) + Data(count: 8)], seq: 1)
+        var seq: UInt32 = 2
+        for i in stride(from: 0, to: packets.count, by: 5) {
+            ogg += page(Array(packets[i..<min(i + 5, packets.count)]), seq: seq); seq += 1
+        }
+        return ogg
+    }
+
+    func testPacketsSpanPagesAndChunks() throws {
+        let big = Data((0..<600).map { UInt8($0 % 251) })
+        let small = Data([1, 2, 3])
+        let bytes = Self.page([small, big.prefix(510)], open: true, seq: 0) + Self.page([big.dropFirst(510), small], continued: true, seq: 1)
+        var d = OggDemuxer()
+        var out: [Data] = []
+        for b in bytes { out += try d.feed(Data([b])) }
+        expect(out == [small, big, small])
+        var bad = OggDemuxer()
+        expectThrows { try bad.feed(Data(count: 40)) }
+    }
+
+    func testDetectsPCMAndOpusAndDecodesTone() throws {
+        var pcm = RemoteAudioStream()
+        expect(try pcm.feed(Data([1, 2, 3])) == [])
+        expect(try pcm.feed(Data([4, 5, 6, 7, 8])) == [Data([1, 2, 3, 4, 5, 6, 7, 8])])
+        expect(pcm.kind == .pcm)
+
+        var opus = RemoteAudioStream()
+        let stream = Self.opusStream(seconds: 0.5)
+        var packets: [Data] = []
+        for i in stride(from: 0, to: stream.count, by: 97) { packets += try opus.feed(stream.subdata(in: i..<min(i + 97, stream.count))) }
+        expect(opus.kind == .opus)
+        expect(packets.count >= 45 && !packets.contains { $0.starts(with: Data("Opus".utf8)) })
+        let dec = OpusDecoder()!
+        let samples = packets.compactMap { dec.decode($0) }.flatMap { $0 }
+        let tail = samples.suffix(9600) // skip codec warm-up
+        let rms = (tail.reduce(0) { $0 + $1 * $1 } / Float(max(tail.count, 1))).squareRoot()
+        expect(rms > 0.2 && rms < 0.5) // a 0.5-amplitude sine has RMS ≈ 0.35
+    }
+}
+
 // Minimal test harness (this toolchain ships without XCTest / Swift Testing macros).
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var current = ""
@@ -410,6 +472,12 @@ func run(_ name: String, _ body: () throws -> Void) {
     let before = failures
     do { try body() } catch { failures += 1; print("  FAIL \(name): threw \(error)") }
     print("\(failures == before ? "ok  " : "FAIL") \(name)")
+}
+
+// Fixture writer for scripts/test/linux-e2e.sh: `circe-selftest --write-test-ogg PATH`.
+if let i = CommandLine.arguments.firstIndex(of: "--write-test-ogg"), i + 1 < CommandLine.arguments.count {
+    try! OggTests.opusStream(seconds: 3).write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+    exit(0)
 }
 
 run("WireTests.testInputEventsRoundTrip") { try WireTests().testInputEventsRoundTrip() }
@@ -436,5 +504,7 @@ run("FLVTests.testNormalizesShortNALLengths") { try FLVTests().testNormalizesSho
 run("FLVTests.testRejectsGarbageAndOtherCodecs") { FLVTests().testRejectsGarbageAndOtherCodecs() }
 run("FLVTests.testFramerAttachesParameterSetsToKeyframes") { try FLVTests().testFramerAttachesParameterSetsToKeyframes() }
 run("FLVTests.testDecodesRealH264ThroughFLV") { try FLVTests().testDecodesRealH264ThroughFLV() }
+run("OggTests.testPacketsSpanPagesAndChunks") { try OggTests().testPacketsSpanPagesAndChunks() }
+run("OggTests.testDetectsPCMAndOpusAndDecodesTone") { try OggTests().testDetectsPCMAndOpusAndDecodesTone() }
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) failure(s).")
 exit(failures == 0 ? 0 : 1)
