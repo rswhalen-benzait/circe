@@ -60,6 +60,12 @@ import Foundation
         }
         let connected = historyModel.connect(address: "connected.local")
         precondition(historyModel.recentConnections[0].name == "Connected Mac")
+        precondition(connected.showAccessibilityHint && preferences.accessibilityHintShown)
+        connected.dismissAccessibilityHint()
+        precondition(!connected.showAccessibilityHint)
+        let secondConnection = historyModel.connect(address: "second.local")
+        precondition(!secondConnection.showAccessibilityHint, "Accessibility hint must only appear once")
+        historyModel.closeSession(secondConnection.id)
         historyModel.closeSession(connected.id)
         historyModel.clearRecents()
         precondition(RecentConnectionsStore(defaults: defaults).connections.isEmpty)

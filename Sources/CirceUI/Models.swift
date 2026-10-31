@@ -57,6 +57,7 @@ public enum StreamQuality: String, CaseIterable, Identifiable {
 @MainActor
 public final class CircePreferences: ObservableObject {
     public static let sharingKey = "shareThisMac"
+    @Published public var accessibilityHintShown: Bool { didSet { defaults.set(accessibilityHintShown, forKey: "accessibilityHintShown") } }
     @Published public var shareThisMac: Bool { didSet { defaults.set(shareThisMac, forKey: Self.sharingKey) } }
     @Published public var clipboard: Bool { didSet { defaults.set(clipboard, forKey: "clipboard") } }
     @Published public var audio: Bool { didSet { defaults.set(audio, forKey: "audio") } }
@@ -69,6 +70,7 @@ public final class CircePreferences: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: ["clipboard": true, "audio": true, "captureShortcuts": true, "showStats": false])
+        accessibilityHintShown = defaults.bool(forKey: "accessibilityHintShown")
         shareThisMac = defaults.bool(forKey: Self.sharingKey)
         clipboard = defaults.bool(forKey: "clipboard")
         audio = defaults.bool(forKey: "audio")
@@ -108,6 +110,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var audioAvailable = false
     @Published public var qualityAvailable = false
     @Published public var keyboardReleaseAvailable = false
+    @Published public var showAccessibilityHint = false
     public var displayView: NSView?
     var onPIN: ((String) -> Void)?
     var onPassword: ((String, String) -> Void)?
@@ -120,6 +123,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     var onQuality: ((StreamQuality) -> Void)?
     var onReleaseKeyboard: (() -> Void)?
     var onSelectDisplay: ((UInt32) -> Void)?
+    var onRequestAccessibility: (() -> Void)?
     public init(name: String, address: String) { self.name = name; self.address = address }
     public func submitPIN(_ pin: String) {
         guard pin.count == 6, pin.allSatisfy(\.isNumber) else { return }
@@ -145,6 +149,8 @@ public final class RemoteSession: ObservableObject, Identifiable {
     public func setQuality(_ value: StreamQuality) { quality = value; onQuality?(value) }
     public func releaseKeyboard() { onReleaseKeyboard?() }
     public func selectDisplay(_ id: UInt32) { selectedDisplayID = id; onSelectDisplay?(id) }
+    public func requestAccessibility() { releaseKeyboard(); onRequestAccessibility?() }
+    public func dismissAccessibilityHint() { showAccessibilityHint = false }
 }
 
 @MainActor
@@ -205,8 +211,14 @@ public final class CirceModel: ObservableObject {
         if onConnect == nil { session.phase = .disconnected("The connection engine is not available in this preview.") }
         session.showStats = preferences.showStats
         sessions[session.id] = session
+        session.onRequestAccessibility = { [weak self] in self?.requestAccessibility() }
         recentObservations[session.id] = session.$phase.filter { $0 == .streaming }.prefix(1).sink { [weak self, weak session] _ in
             guard let self, let session else { return }
+            self.refreshPermissions()
+            if !self.accessibilityGranted && self.preferences.captureShortcuts && !self.preferences.accessibilityHintShown {
+                self.preferences.accessibilityHintShown = true
+                session.showAccessibilityHint = true
+            }
             self.recentStore.record(host: host, address: address, name: session.name)
             self.recentConnections = self.recentStore.connections
         }

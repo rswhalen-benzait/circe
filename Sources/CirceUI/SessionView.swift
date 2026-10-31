@@ -31,10 +31,11 @@ public struct SessionView: View {
                 if session.showStats {
                     stats.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading).allowsHitTesting(false)
                 }
-                VStack(spacing: 0) {
+                VStack(spacing: 8) {
                     toolbar.opacity(toolbarVisible ? 1 : 0)
                         .offset(y: toolbarVisible ? 0 : -12).allowsHitTesting(toolbarVisible)
                         .onHover { hoveringToolbar = $0; if $0 { revealToolbar() } else { scheduleHide() } }
+                    if session.showAccessibilityHint { accessibilityHint.padding(.horizontal, 16) }
                 }.padding(.top, 12).animation(.easeInOut(duration: 0.2), value: toolbarVisible)
             case .disconnected(let reason): if let reason { disconnected(reason) } else { Color.clear }
             }
@@ -52,6 +53,7 @@ public struct SessionView: View {
             }
             .onChange(of: session.remotePixelSize) { _, _ in configureWindow() }
             .onChange(of: toolbarVisible) { _, _ in updateTrafficLights() }
+            .onChange(of: session.showAccessibilityHint) { _, shown in if shown { revealToolbar() } else { scheduleHide() } }
             .onReceive(NotificationCenter.default.publisher(for: .circeDisconnectSession)) { _ in
                 if window?.isKeyWindow == true { session.disconnect() }
             }
@@ -131,6 +133,19 @@ public struct SessionView: View {
             .shadow(color: .black.opacity(0.25), radius: 12, y: 5).fixedSize(horizontal: true, vertical: false)
             .help("Local shortcuts: ⌃⌥⌘F full screen · ⌃⌥⌘Esc release input · ⌃⌥⌘D disconnect · ⌃⌥⌘S stats")
     }
+    private var accessibilityHint: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "keyboard").font(.system(size: 15)).foregroundStyle(.white.opacity(0.7))
+            Text("Allow Accessibility to send ⌘-Tab to \(session.name).")
+                .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85)).fixedSize(horizontal: false, vertical: true)
+            Button("Allow…") { session.requestAccessibility() }.buttonStyle(.bordered).controlSize(.small)
+            Button { session.dismissAccessibilityHint() } label: { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).frame(width: 20, height: 24) }
+                .buttonStyle(.plain).foregroundStyle(.white.opacity(0.6)).help("Dismiss Accessibility hint").accessibilityLabel("Dismiss Accessibility hint")
+        }.padding(11).frame(maxWidth: 420)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.white.opacity(0.12)))
+            .environment(\.colorScheme, .dark)
+    }
     private var separator: some View { Rectangle().fill(.white.opacity(0.17)).frame(width: 1, height: 17).padding(.horizontal, 3) }
     private func tool(_ label: String, symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: symbol).font(.system(size: 12)).frame(width: 31, height: 30).contentShape(Circle()) }
@@ -188,7 +203,7 @@ public struct SessionView: View {
         hideTask?.cancel()
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(2.5))
-            guard !Task.isCancelled, !hoveringToolbar else { return }
+            guard !Task.isCancelled, !hoveringToolbar, !session.showAccessibilityHint else { return }
             toolbarVisible = false
         }
     }

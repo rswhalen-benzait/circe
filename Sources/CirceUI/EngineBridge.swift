@@ -205,6 +205,9 @@ public final class CirceRuntime: ObservableObject {
         model.loginItemStatus = loginService.status
         model.screenRecordingGranted = Permissions.screenRecording
         model.accessibilityGranted = Permissions.accessibility
+        if model.accessibilityGranted {
+            for session in model.sessions.values { session.showAccessibilityHint = false }
+        }
     }
 
     private func refreshTrustedComputers() {

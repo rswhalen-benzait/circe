@@ -12,6 +12,11 @@ public struct CirceSettingsView: View {
                     Toggle("Fit remote display to window", isOn: $preferences.matchesWindowResolution)
                     Text("For new Circe sessions, adjusts the remote Mac’s display resolution as you resize the window. Its previous resolution returns when you disconnect.")
                         .font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("Client Accessibility", value: model.accessibilityGranted ? "Allowed" : "Not allowed")
+                    if !model.accessibilityGranted {
+                        Text("Allow Accessibility on this Mac to send ⌘-Tab and ⌘-Space to the remote computer.").font(.caption).foregroundStyle(.secondary)
+                        Button("Allow Accessibility…") { model.requestAccessibility() }
+                    }
                     Toggle("Show connection stats", isOn: $preferences.showStats)
                     Text("New sessions use this preference. You can also show or hide stats from the session toolbar.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -72,6 +77,8 @@ public struct CirceSettingsView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity).background(CirceStyle.paper).preferredColorScheme(.light)
                 .tabItem { Label("About", systemImage: "sparkles") }
         }.frame(width: 520, height: 390).tint(CirceStyle.violet)
+            .onAppear { model.refreshPermissions() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshPermissions() }
             .sheet(isPresented: $showHosting) { HostingSetupView(model: model) }
     }
 }
