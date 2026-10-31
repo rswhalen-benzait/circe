@@ -202,9 +202,9 @@ func runVNC() {
             if let minFPS = value("--min-fps").flatMap(Double.init), session.stats.fps < minFPS {
                 bad += 1; log("fps \(session.stats.fps) < \(minFPS)")
             }
-            log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ video=%d videoLimit=%d mismatches=%d", session.stats.codec,
+            log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ video=%d videoLimit=%d fpsLimit=%d mismatches=%d", session.stats.codec,
                        session.stats.transport, session.stats.resolution, session.stats.fps,
-                       session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", session.videoFramesShown, session.videoBitrateKbps ?? 0, bad))
+                       session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", session.videoFramesShown, session.videoBitrateKbps ?? 0, session.videoFPSLimit ?? 0, bad))
             session.disconnect()
             exit(bad == 0 ? 0 : 6)
         }

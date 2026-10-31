@@ -83,6 +83,8 @@ public final class VNCSession: ObservableObject, Identifiable {
     private var videoFPS = RateMeter()
     /// Bitrate ceiling after the stream fell behind the network (nil = the helper's own choice).
     public private(set) var videoBitrateKbps: Int?
+    /// Frame-rate ceiling after repeated lag (a busy VM CPU, not just the network).
+    public private(set) var videoFPSLimit: Int?
     private var videoConfig: VideoConfig?
     /// Remember credentials in the Keychain (off for tests / one-off connections).
     public var savesCredentials = true
@@ -370,6 +372,7 @@ public final class VNCSession: ObservableObject, Identifiable {
         }()
         var cmd = "exec \"$HOME/.local/libexec/circe/video\" --display \(display)"
         if let kbps = videoBitrateKbps { cmd += " --bitrate-kbps \(kbps)" }
+        if let fps = videoFPSLimit { cmd += " --fps \(fps)" }
         return cmd
     }
 
@@ -478,6 +481,8 @@ public final class VNCSession: ObservableObject, Identifiable {
     private func videoFellBehind(_ pipe: ProcessPipe) {
         guard videoPipe === pipe else { return }
         let current = videoBitrateKbps ?? videoConfig?.bitrateKbps ?? 6000
+        // Still behind after a lighter bitrate: the VM may be out of CPU, so also capture less often.
+        if videoBitrateKbps != nil, let fps = videoFPSLimit ?? videoConfig?.fps { videoFPSLimit = max(10, fps * 2 / 3) }
         videoBitrateKbps = max(1000, current * 6 / 10)
         restartVideo()
     }

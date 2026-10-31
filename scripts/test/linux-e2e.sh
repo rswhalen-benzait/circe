@@ -39,8 +39,10 @@ check "no video helper on the VM falls back to VNC" "VNC · Tight" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --min-fps 10
 check "video recovers after the stream dies" "mismatches=0" \
   env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_EXIT_AFTER=1 FAKE_VIDEO_RUN=$$ $CLI vnc --ssh t@vm --display 22 --password x --seconds 5 --expect-video
-check "video that falls behind restarts at a lower bitrate" "videoLimit=3600 mismatches=0" \
+check "video that falls behind restarts at a lower bitrate" "videoLimit=3600 fpsLimit=0 mismatches=0" \
   env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_LAG=1 $CLI vnc --ssh t@vm --display 22 --password x --seconds 6 --expect-video
+check "video still behind at lower bitrate also lowers the frame rate" "videoLimit=2160 fpsLimit=40 mismatches=0" \
+  env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_LAG=2 $CLI vnc --ssh t@vm --display 22 --password x --seconds 10 --expect-video
 check "Opus audio from the audio helper" "mismatches=0" \
   env FAKE_AUDIO_OGG="$TMP/tone.ogg" $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --expect-audio --expect-audio-encoding opus
 check "no audio helper falls back to raw PCM (parec)" "mismatches=0" \

@@ -22,7 +22,9 @@ flag = os.path.join(os.environ.get("TMPDIR", "/tmp"), "circe-fake-video-" + os.e
 limit = float(os.environ.get("FAKE_VIDEO_EXIT_AFTER", "0"))
 if limit and os.path.exists(flag): limit = 0
 if limit: open(flag, "w").close()
-lag = os.environ.get("FAKE_VIDEO_LAG") == "1" and "--bitrate-kbps" not in args
+# FAKE_VIDEO_LAG=2: still lags at a lower bitrate; only a lower --fps fixes it (an overloaded VM CPU).
+mode = os.environ.get("FAKE_VIDEO_LAG")
+lag = (mode == "1" and "--bitrate-kbps" not in args) or (mode == "2" and "--fps" not in args)
 print("CIRCE_VIDEO_CONFIG " + json.dumps({"version": 1, "codec": "h264", "container": "flv", "encoder": "x264", "sourceWidth": 320, "sourceHeight": 240, "width": 320, "height": 240, "fps": 60, "bitrateKbps": 6000, "threads": 1}), file=sys.stderr, flush=True)
 out = sys.stdout.buffer
 out.write(header + tags[0]); out.flush()  # sequence header
