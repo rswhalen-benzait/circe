@@ -1,0 +1,17 @@
+#!/bin/bash
+# Stand-in for /usr/bin/ssh in tests: `-W host:port` -> nc; otherwise run the last argument
+# (the remote command) locally with a fake `parec` on PATH.
+dir="$(cd "$(dirname "$0")" && pwd)"
+target=""; prev=""; last=""
+for a in "$@"; do
+  [[ "$prev" == "-W" ]] && target="$a"
+  prev="$a"; last="$a"
+done
+if [[ -n "$target" ]]; then
+  [[ -n "$FAKE_SSH_FAIL" ]] && { echo "$FAKE_SSH_FAIL" >&2; exit 255; }
+  # Like real ssh: a refused forward is reported on stderr.
+  nc -z "${target%:*}" "${target##*:}" 2>/dev/null || { echo "channel 0: open failed: connect failed: Connection refused" >&2; exit 255; }
+  exec nc "${target%:*}" "${target##*:}"
+fi
+export PATH="$dir/fakebin:$PATH"
+exec /bin/sh -c "$last"

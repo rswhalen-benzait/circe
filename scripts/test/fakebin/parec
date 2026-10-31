@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+# Fake PulseAudio recorder: 440 Hz tone, s16le 48 kHz stereo, paced in real time.
+import math, struct, sys, time
+t0, n = time.time(), 0
+while True:
+    frames = 480
+    buf = b"".join(struct.pack("<hh", v, v) for v in (int(8000 * math.sin(2 * math.pi * 440 * (n + i) / 48000)) for i in range(frames)))
+    sys.stdout.buffer.write(buf); sys.stdout.buffer.flush()
+    n += frames
+    time.sleep(max(0, t0 + n / 48000 - time.time()))

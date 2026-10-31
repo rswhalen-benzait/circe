@@ -122,13 +122,33 @@ func runConnect() {
 
 @MainActor var vncRef: VNCSession?
 
-/// circe-cli vnc <address> [--seconds N] [--user U --password P] [--expect x,y=0xRRGGBB ...]
+/// circe-cli vnc <address> | --ssh user@host [--ssh-port N] | --gcloud INSTANCE --zone Z [--project P] [--no-iap]
+///   [--display N] [--seconds N] [--user U --password P] [--expect x,y=0xRRGGBB ...] [--tolerance N]
+///   [--resize WxH] [--expect-clipboard TEXT] [--expect-audio]
 @MainActor
 func runVNC() {
-    guard args.count >= 2, let session = VNCSession(address: args[1]) else { log("usage: circe-cli vnc <address>"); exit(2) }
+    let display = value("--display").flatMap(Int.init) ?? 1
+    let session: VNCSession
+    if let dest = value("--ssh") {
+        let t = RFBTunnel.ssh(destination: dest, port: value("--ssh-port").flatMap(Int.init), vncPort: RFBTunnel.vncPort(display: display))
+        session = VNCSession(tunnel: t, name: dest)
+    } else if let inst = value("--gcloud"), let zone = value("--zone") {
+        let t = RFBTunnel.gcloud(instance: inst, zone: zone, project: value("--project"), useIAP: !args.contains("--no-iap"),
+                                 vncPort: RFBTunnel.vncPort(display: display))
+        session = VNCSession(tunnel: t, name: inst)
+    } else if args.count >= 2, let s = VNCSession(address: args[1]) {
+        session = s
+    } else {
+        log("usage: circe-cli vnc <address> | --ssh user@host | --gcloud INSTANCE --zone ZONE"); exit(2)
+    }
+    session.clipboardSyncEnabled = false // never touch this Mac's real clipboard from tests
+    session.audioMuted = true            // verify the audio stream without playing it
+    session.savesCredentials = false     // and never write test passwords to the Keychain
     let seconds = value("--seconds").flatMap(Double.init) ?? 3
+    let tolerance = value("--tolerance").flatMap(Int.init) ?? 0
     var lastState: ClientState?
     var start: Date?
+    var resized = false
     Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
         MainActor.assumeIsolated {
             if session.state != lastState {
@@ -138,23 +158,39 @@ func runVNC() {
                     guard let pw = value("--password") else { log("server requires credentials (username needed: \(session.needsUsername))"); exit(3) }
                     session.submitPassword(username: value("--user") ?? NSUserName(), password: pw)
                 }
-                if case .streaming = session.state { start = Date() }
+                if case .streaming = session.state, start == nil { start = Date() }
                 if case .disconnected(let r) = session.state { log("disconnected: \(r ?? "-")"); exit(4) }
             }
-            guard let start, Date().timeIntervalSince(start) >= seconds else { return }
+            guard let start else { return }
+            if let size = value("--resize"), !resized, Date().timeIntervalSince(start) > 0.5 {
+                resized = true
+                let wh = size.split(separator: "x").compactMap { Int($0) }
+                session.requestDesktopSize(width: wh[0], height: wh[1])
+            }
+            guard Date().timeIntervalSince(start) >= seconds else { return }
             var bad = 0
             var i = 0
             while i < args.count {
                 if args[i] == "--expect", i + 1 < args.count {
                     let parts = args[i + 1].split(separator: "=")
                     let xy = parts[0].split(separator: ",").compactMap { Int($0) }
-                    let want = UInt32(parts[1].dropFirst(2), radix: 16)! | 0xFF00_0000
+                    let want = UInt32(parts[1].dropFirst(2), radix: 16)!
                     let got = session.samplePixel(x: xy[0], y: xy[1]) ?? 0
-                    if got != want { bad += 1; log(String(format: "pixel (%d,%d) = %08X, expected %08X", xy[0], xy[1], got, want)) }
+                    let diff = [16, 8, 0].map { abs(Int((got >> $0) & 0xFF) - Int((want >> $0) & 0xFF)) }.max()!
+                    if diff > tolerance { bad += 1; log(String(format: "pixel (%d,%d) = %08X, expected %06X", xy[0], xy[1], got, want)) }
                 }
                 i += 1
             }
-            log(String(format: "RESULT %@ %@ fps=%.0f pixelMismatches=%d", session.stats.codec, session.stats.resolution, session.stats.fps, bad))
+            if let size = value("--resize"), session.stats.resolution != size.replacingOccurrences(of: "x", with: "×") {
+                bad += 1; log("resize: got \(session.stats.resolution), wanted \(size)")
+            }
+            if let clip = value("--expect-clipboard"), session.lastRemoteClipboard != clip {
+                bad += 1; log("clipboard: got \(session.lastRemoteClipboard ?? "nil")")
+            }
+            if args.contains("--expect-audio"), !session.audioActive { bad += 1; log("audio: not playing") }
+            log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ mismatches=%d", session.stats.codec,
+                       session.stats.transport, session.stats.resolution, session.stats.fps,
+                       session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", bad))
             session.disconnect()
             exit(bad == 0 ? 0 : 6)
         }

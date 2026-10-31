@@ -10,6 +10,9 @@ public final class VNCDisplayView: NSView {
 
     public var capturesSystemShortcuts = true { didSet { updateKeyboardCapture() } }
     var onFocusChange: ((Bool) -> Void)?
+    var onSettledResize: ((CGSize) -> Void)?
+    private var resizeWork: DispatchWorkItem?
+    var commandMapping: CommandKeyMapping = .control
 
     private var buttons: UInt8 = 0
     private var downKeys: [UInt16: UInt32] = [:]
@@ -52,6 +55,11 @@ public final class VNCDisplayView: NSView {
         CATransaction.setDisableActions(true)
         imageLayer.frame = videoRect
         CATransaction.commit()
+        resizeWork?.cancel()
+        let size = bounds.size
+        let work = DispatchWorkItem { [weak self] in self?.onSettledResize?(size) }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
     func show(_ fb: RFBFramebuffer) {
@@ -173,7 +181,7 @@ public final class VNCDisplayView: NSView {
     }
 
     private func flags(_ e: NSEvent) {
-        guard let sym = KeySyms.modifier(e.keyCode, apple: isApple), let flag = KeySyms.modifierFlag(e.keyCode) else { return }
+        guard let sym = KeySyms.modifier(e.keyCode, apple: isApple, command: commandMapping), let flag = KeySyms.modifierFlag(e.keyCode) else { return }
         let down = e.modifierFlags.contains(flag) && modifiers[e.keyCode] == nil
         if down { modifiers[e.keyCode] = sym } else { modifiers[e.keyCode] = nil }
         client?.sendKey(sym, down: down)

@@ -7,6 +7,7 @@ enum RFBError: Error, CustomStringConvertible {
     case protocolError(String)
     case authFailed(String)
     case unsupported(String)
+    case tunnelClosed(String?)
 
     var description: String {
         switch self {
@@ -14,20 +15,48 @@ enum RFBError: Error, CustomStringConvertible {
         case .protocolError(let s): return "Protocol error: \(s)"
         case .authFailed(let s): return s
         case .unsupported(let s): return s
+        case .tunnelClosed(let s): return s ?? "The tunnel closed unexpectedly."
         }
     }
 }
 
-/// Blocking, buffered reads over an NWConnection for a protocol parser running on its own thread.
+/// Blocking, buffered reads for a protocol parser running on its own thread — over a TCP
+/// connection or over a tunnel process (ssh / gcloud) whose stdin/stdout carry the stream.
 final class RFBStream: @unchecked Sendable {
-    let connection: NWConnection
+    let tunnel: RFBTunnel
+    private var connection: NWConnection?
+    private var pipe: ProcessPipe?
     private let queue = DispatchQueue(label: "circe.vnc.net", qos: .userInteractive)
     private var buffer = Data()
     private var offset = 0
     private var failed: Error?
     private let writeLock = NSLock()
+    private(set) var bytesRead: UInt64 = 0
 
-    init(endpoint: NWEndpoint) {
+    init(tunnel: RFBTunnel) {
+        self.tunnel = tunnel
+    }
+
+    /// Blocks until connected or failed.
+    func open() throws {
+        switch tunnel {
+        case let .direct(host, port):
+            guard let p = NWEndpoint.Port(rawValue: UInt16(clamping: port)) else { throw RFBError.protocolError("bad port") }
+            try openNetwork(.hostPort(host: NWEndpoint.Host(host), port: p))
+        default:
+            let (exe, args) = try tunnel.streamCommand()
+            let pp = ProcessPipe(executable: exe, arguments: args)
+            pipe = pp
+            do { try pp.start() } catch {
+                throw RFBError.unsupported("Couldn't start \(exe.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Existing Bonjour endpoints (e.g. a discovered Mac) skip host:port resolution.
+    func open(endpoint: NWEndpoint) throws { try openNetwork(endpoint) }
+
+    private func openNetwork(_ endpoint: NWEndpoint) throws {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
         tcp.connectionTimeout = 8
@@ -35,11 +64,8 @@ final class RFBStream: @unchecked Sendable {
         tcp.keepaliveIdle = 5
         let params = NWParameters(tls: nil, tcp: tcp)
         params.serviceClass = .interactiveVideo
-        connection = NWConnection(to: endpoint, using: params)
-    }
-
-    /// Blocks until connected or failed.
-    func open() throws {
+        let connection = NWConnection(to: endpoint, using: params)
+        self.connection = connection
         let sem = DispatchSemaphore(value: 0)
         var result: Error?
         var signaled = false
@@ -61,24 +87,52 @@ final class RFBStream: @unchecked Sendable {
         if let result { throw result }
     }
 
-    func close() { connection.cancel() }
+    func close() {
+        connection?.cancel()
+        pipe?.terminate()
+    }
+
+    /// Why the stream ended, in words — includes ssh/gcloud diagnostics for tunnels.
+    func closeReason() -> String? {
+        guard let pipe else { return nil }
+        let err = pipe.errorOutput
+        return err.isEmpty ? nil : ProcessPipe.explain(err, tunnel: tunnel)
+    }
+
+    private func receiveChunk() throws -> Data {
+        if let pipe {
+            let d = pipe.read()
+            if d.isEmpty { throw RFBError.tunnelClosed(closeReason()) }
+            return d
+        }
+        guard let connection else { throw RFBError.closed }
+        let sem = DispatchSemaphore(value: 0)
+        var chunk: Data?
+        var err: Error?
+        var done = false
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, complete, error in
+            chunk = data; err = error; done = complete
+            sem.signal()
+        }
+        sem.wait()
+        if let err { throw err }
+        if let chunk, !chunk.isEmpty { return chunk }
+        if done { throw RFBError.closed }
+        return Data()
+    }
 
     private func fill(_ need: Int) throws {
         while buffer.count - offset < need {
             if let failed { throw failed }
-            let sem = DispatchSemaphore(value: 0)
-            var chunk: Data?
-            var err: Error?
-            var done = false
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, complete, error in
-                chunk = data; err = error; done = complete
-                sem.signal()
-            }
-            sem.wait()
             if offset > 0 && offset == buffer.count { buffer.removeAll(keepingCapacity: true); offset = 0 }
-            if let chunk, !chunk.isEmpty { buffer.append(chunk) }
-            if let err { failed = err; throw err }
-            if done && (chunk?.isEmpty ?? true) { failed = RFBError.closed; throw RFBError.closed }
+            do {
+                let chunk = try receiveChunk()
+                bytesRead += UInt64(chunk.count)
+                buffer.append(chunk)
+            } catch {
+                failed = error
+                throw error
+            }
         }
     }
 
@@ -98,7 +152,9 @@ final class RFBStream: @unchecked Sendable {
     func skip(_ n: Int) throws { _ = try read(n) }
 
     func write(_ d: Data) {
-        writeLock.withLock { connection.send(content: d, completion: .contentProcessed { _ in }) }
+        writeLock.withLock {
+            if let pipe { pipe.write(d) } else { connection?.send(content: d, completion: .contentProcessed { _ in }) }
+        }
     }
 }
 
@@ -143,4 +199,19 @@ final class ZlibStream {
         }
         return out
     }
+}
+
+/// zlib-wrapped DEFLATE (RFC 1950) — Compression's ZLIB is raw DEFLATE, so add header + Adler-32.
+func zlibCompress(_ input: Data) -> Data {
+    var out = Data([0x78, 0x9C])
+    let cap = input.count + input.count / 10 + 64
+    var dst = [UInt8](repeating: 0, count: cap)
+    let n = input.withUnsafeBytes { src in
+        compression_encode_buffer(&dst, cap, src.bindMemory(to: UInt8.self).baseAddress!, input.count, nil, COMPRESSION_ZLIB)
+    }
+    out.append(contentsOf: dst.prefix(n))
+    var a: UInt32 = 1, b: UInt32 = 0
+    for byte in input { a = (a + UInt32(byte)) % 65_521; b = (b + a) % 65_521 }
+    out += be32(b << 16 | a)
+    return out
 }

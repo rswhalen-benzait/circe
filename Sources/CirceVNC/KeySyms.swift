@@ -19,8 +19,9 @@ enum KeySyms {
         0x47: 0xFF7F, // Clear / NumLock
     ]
 
-    /// Modifier key codes -> keysym. Command maps to Meta on Apple servers, Super elsewhere.
-    static func modifier(_ code: UInt16, apple: Bool) -> UInt32? {
+    /// Modifier key codes -> keysym. ⌘ is Meta on Apple servers; elsewhere Control (so ⌘C/⌘V work on
+    /// Linux) or Super, per the user's choice.
+    static func modifier(_ code: UInt16, apple: Bool, command: CommandKeyMapping = .control) -> UInt32? {
         switch code {
         case 0x38: return 0xFFE1 // Shift_L
         case 0x3C: return 0xFFE2 // Shift_R
@@ -28,8 +29,9 @@ enum KeySyms {
         case 0x3E: return 0xFFE4 // Control_R
         case 0x3A: return 0xFFE9 // Alt_L (Option)
         case 0x3D: return 0xFFEA // Alt_R
-        case 0x37: return apple ? 0xFFE7 : 0xFFEB // Meta_L / Super_L (Command)
-        case 0x36: return apple ? 0xFFE8 : 0xFFEC
+        // ⌘ as Control uses Control_R so it never fights the physical Control key's up/down state.
+        case 0x37: return apple ? 0xFFE7 : command == .control ? 0xFFE4 : 0xFFEB // Meta_L / Control_R / Super_L
+        case 0x36: return apple ? 0xFFE8 : command == .control ? 0xFFE4 : 0xFFEC
         case 0x39: return 0xFFE5 // Caps Lock
         default: return nil
         }

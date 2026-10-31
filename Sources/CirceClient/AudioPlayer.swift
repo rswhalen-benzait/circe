@@ -3,7 +3,7 @@ import CirceCore
 import Foundation
 
 /// Low-latency PCM playback with a small adaptive jitter buffer (~30 ms target).
-final class AudioPlayer: @unchecked Sendable {
+public final class AudioPlayer: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var source: AVAudioSourceNode?
     private let lock = NSLock()
@@ -17,16 +17,17 @@ final class AudioPlayer: @unchecked Sendable {
     private let targetFrames: Int
     private let maxFrames: Int
 
-    init(format: AudioFormatDescriptor) {
+    /// - Parameter targetLatency: jitter buffer target in seconds (30 ms on a LAN; more over the internet).
+    public init(format: AudioFormatDescriptor, targetLatency: Double = 0.030) {
         sampleRate = format.sampleRate
-        targetFrames = Int(format.sampleRate * 0.030)
-        maxFrames = Int(format.sampleRate * 0.120)
+        targetFrames = Int(format.sampleRate * targetLatency)
+        maxFrames = Int(format.sampleRate * max(0.120, targetLatency * 4))
         ring = [Float](repeating: 0, count: Int(format.sampleRate) * 2 * 2)
         encoding = format.encoding
         opus = format.encoding == .opus ? OpusDecoder() : nil
     }
 
-    func start() {
+    public func start() {
         guard source == nil,
               let fmt = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(channels)) else { return }
         let node = AVAudioSourceNode(format: fmt) { [weak self] _, _, frameCount, abl in
@@ -40,18 +41,18 @@ final class AudioPlayer: @unchecked Sendable {
         try? engine.start()
     }
 
-    func stop() {
+    public func stop() {
         engine.stop()
         if let source { engine.detach(source) }
         source = nil
     }
 
-    func setMuted(_ muted: Bool) { engine.mainMixerNode.outputVolume = muted ? 0 : 1 }
+    public func setMuted(_ muted: Bool) { engine.mainMixerNode.outputVolume = muted ? 0 : 1 }
 
     private let opus: OpusDecoder?
     private let encoding: AudioFormatDescriptor.Encoding
 
-    func enqueue(_ packet: AudioPacket) {
+    public func enqueue(_ packet: AudioPacket) {
         if encoding == .opus {
             if let samples = opus?.decode(packet.data) { enqueue(interleaved: samples) }
             return
