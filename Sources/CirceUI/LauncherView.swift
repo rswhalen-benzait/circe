@@ -8,7 +8,8 @@ public struct LauncherView: View {
     @Environment(\.openSettings) private var openSettings
     @CirceViewState<String> private var address = ""
     @CirceViewState<String?> private var addressError = nil
-    private enum Sheet: String, Identifiable { case welcome, sharing; var id: Self { self } }
+    private enum Sheet: String, Identifiable { case welcome, sharing, addComputer; var id: Self { self } }
+    @CirceViewState<SavedComputer?> private var editingComputer: SavedComputer? = nil
     @CirceViewState<Sheet?> private var sheet = nil
     @CirceViewState<Bool> private var shareAfterWelcome = false
     @CirceViewState<LauncherWindowReference> private var windowReference = LauncherWindowReference()
@@ -21,6 +22,7 @@ public struct LauncherView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     introduction
+                    savedComputers.focusSection()
                     nearby.focusSection()
                     recents.focusSection()
                     manualConnection.focusSection()
@@ -47,8 +49,10 @@ public struct LauncherView: View {
                     sheet = nil
                 }
             case .sharing: HostingSetupView(model: model)
+            case .addComputer: AddComputerView(model: model)
             }
         }
+        .sheet(item: $editingComputer) { AddComputerView(model: model, computer: $0) }
         .onAppear { model.refreshPermissions() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)) { _ in presentWelcomeIfNeeded() }
         .onReceive(NotificationCenter.default.publisher(for: .circeLauncherRevealed)) { notification in
@@ -65,6 +69,7 @@ public struct LauncherView: View {
             CirceMark(size: 31)
             Text("Circe").font(.system(size: 20, weight: .semibold, design: .serif)).tracking(-0.5)
             Spacer()
+            Button { sheet = .addComputer } label: { Label("Add a computer", systemImage: "plus") }.buttonStyle(QuietButtonStyle())
             Button { openSettings() } label: { Image(systemName: "slider.horizontal.3").font(.system(size: 15)).frame(width: 30, height: 30) }
                 .buttonStyle(.plain).foregroundStyle(CirceStyle.secondaryInk).help("Settings…").accessibilityLabel("Open settings")
         }.padding(.horizontal, 32).padding(.top, 18).padding(.bottom, 12)
@@ -72,11 +77,45 @@ public struct LauncherView: View {
 
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text("Your Mac.\nWherever you are.")
+            Text("Your desktop.\nWherever you are.")
                 .font(.system(size: 36, weight: .regular, design: .serif)).tracking(-1.2).lineSpacing(-1).accessibilityAddTraits(.isHeader)
             Text("A familiar desktop, just a connection away.")
                 .font(.system(size: 13)).foregroundStyle(CirceStyle.secondaryInk)
         }.padding(.bottom, 3)
+    }
+
+    @ViewBuilder private var savedComputers: some View {
+        if !model.computers.isEmpty {
+            VStack(alignment: .leading, spacing: 11) {
+                SectionEyebrow(title: "Saved computers")
+                ForEach(model.computers) { computer in
+                    Button {
+                        if model.isSettingUp(computer.id) { editingComputer = computer }
+                        else { connect(model.connect(to: computer)) }
+                    } label: {
+                        HStack(spacing: 13) {
+                            Image(systemName: computer.symbol).font(.system(size: 26, weight: .ultraLight)).foregroundStyle(CirceStyle.violet).frame(width: 35)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(computer.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                                Text(model.isSettingUp(computer.id) ? "Setting up Linux…" : computer.detail)
+                                    .font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk).lineLimit(1)
+                            }
+                            Spacer()
+                            if model.isSettingUp(computer.id) { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "arrow.up.right").font(.system(size: 12)).foregroundStyle(CirceStyle.violet) }
+                        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(CirceStyle.surface, in: RoundedRectangle(cornerRadius: 13))
+                            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(CirceStyle.line))
+                            .contentShape(RoundedRectangle(cornerRadius: 13))
+                    }.buttonStyle(FocusOutlineButtonStyle(cornerRadius: 13))
+                        .accessibilityLabel(model.isSettingUp(computer.id) ? "Show setup progress for \(computer.name)" : "Connect to \(computer.name)").accessibilityValue(computer.detail)
+                        .contextMenu {
+                            Button(model.isSettingUp(computer.id) ? "Show setup progress…" : "Connection settings…") { editingComputer = computer }
+                            Button("Remove saved computer") { model.removeComputer(computer.id) }.disabled(model.isSettingUp(computer.id))
+                        }
+                }
+            }
+        }
     }
 
     private var nearby: some View {

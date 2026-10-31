@@ -19,7 +19,7 @@ public struct WelcomeView: View {
                     .font(.system(size: 13)).foregroundStyle(CirceStyle.secondaryInk)
             }
             VStack(spacing: 12) {
-                role(.connect, title: "Connect to a Mac", detail: "Find a nearby Mac or enter its address.\nYour remote desktop opens right here.", symbol: "laptopcomputer")
+                role(.connect, title: "Connect to a computer", detail: "Find a nearby Mac or add a Linux computer.\nYour remote desktop opens right here.", symbol: "laptopcomputer")
                     .keyboardShortcut(.defaultAction)
                 role(.share, title: "Share this Mac", detail: "Make this desktop available to your\nother computers. You choose who can connect.", symbol: "desktopcomputer")
             }.focusSection()

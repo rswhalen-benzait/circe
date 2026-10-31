@@ -20,6 +20,7 @@ public final class CirceRuntime: ObservableObject {
     private var discovered: [String: DiscoveredHost] = [:]
     private var screenSharingHosts: [String: ScreenSharingBrowser.Host] = [:]
     private var connections: [UUID: AnyObject] = [:]
+    private var setupCancellations: [UUID: () -> Void] = [:]
 
     public init(preferences: CircePreferences? = nil, loginService: (any LoginItemServicing)? = nil) {
         model = CirceModel(preferences: preferences)
@@ -33,6 +34,7 @@ public final class CirceRuntime: ObservableObject {
         model.onOpenLoginSettings = { [weak self] in self?.loginService.openSettings() }
         model.onShutdown = { [weak self] in
             self?.host.stop(); self?.browser.stop(); self?.screenSharingBrowser.stop()
+            self?.setupCancellations.values.forEach { $0() }; self?.setupCancellations.removeAll()
         }
         NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification).sink { [weak self] _ in
             self?.model.shutdown()
@@ -42,10 +44,50 @@ public final class CirceRuntime: ObservableObject {
             return self.makeSession(host: host, address: address)
         }
         model.onCloseSession = { [weak self] id in self?.connections.removeValue(forKey: id) }
+        model.onConnectComputer = { [weak self] computer in
+            guard let self else { return RemoteSession(name: computer.name, address: computer.detail) }
+            let presentation = RemoteSession(name: computer.name, address: computer.detail)
+            let engine = VNCSession(tunnel: tunnel(for: computer), name: computer.name)
+            engine.clipboardSyncEnabled = self.model.preferences.clipboard
+            engine.capturesSystemShortcuts = self.model.preferences.captureShortcuts
+            let binding = VNCSessionBinding(engine: engine, presentation: presentation, computerID: computer.id)
+            binding.update(computer)
+            self.connections[presentation.id] = binding
+            engine.connect()
+            return presentation
+        }
+        model.onUpdateComputer = { [weak self] computer in
+            self?.connections.values.compactMap { $0 as? VNCSessionBinding }
+                .filter { $0.computerID == computer.id }.forEach { $0.update(computer) }
+        }
+        model.onSetupComputer = { [weak self] computer, completion in self?.setUp(computer, completion: completion) }
         refreshPermissions()
         browser.start()
         screenSharingBrowser.start()
         if model.preferences.shareThisMac { startHosting() }
+    }
+
+    private func setUp(_ computer: SavedComputer, completion: @escaping (Result<SavedComputer, Error>) -> Void) {
+        guard let url = LinuxHostSetup.scriptURL, let script = try? Data(contentsOf: url) else {
+            completion(.failure(ComputerValidationError("The Linux installer is missing. Reinstall Circe, then try setup again.")))
+            return
+        }
+        let cancellation = LinuxSetup.run(tunnel: tunnel(for: computer), script: script, arguments: ["--display", String(computer.display)], onOutput: { [weak self] line in
+            Task { @MainActor in self?.model.appendSetupOutput(line, for: computer.id) }
+        }, completion: { [weak self] result in
+            Task { @MainActor in
+                self?.setupCancellations.removeValue(forKey: computer.id)
+                switch result {
+                case .success(let report):
+                    guard (1...99).contains(report.display) else { completion(.failure(ComputerValidationError("Setup returned an invalid display number."))); return }
+                    var updated = computer; updated.display = report.display
+                    if let password = report.password { VNCSession.savePassword(password, for: tunnel(for: updated)) }
+                    completion(.success(updated))
+                case .failure(let error): completion(.failure(error))
+                }
+            }
+        })
+        if let cancellation { setupCancellations[computer.id] = cancellation }
     }
 
     private func makeSession(host: NearbyMac?, address: String) -> RemoteSession {
@@ -267,6 +309,7 @@ private final class NativeSessionBinding {
         engine.$stats.sink { [weak presentation] stats in
             presentation?.fps = stats.fps; presentation?.latencyMs = stats.latencyMs; presentation?.bitrateMbps = stats.bitrateMbps
             presentation?.roundTripMs = stats.roundTripMs; presentation?.transport = stats.transport; presentation?.droppedFrames = stats.droppedFrames
+            presentation?.codec = stats.codec
         }.store(in: &observations)
         engine.$displays.sink { [weak presentation] displays in
             presentation?.displays = displays.map { RemoteDisplay(id: $0.displayID, name: $0.name) }
@@ -282,15 +325,25 @@ private final class NativeSessionBinding {
 private final class VNCSessionBinding {
     let engine: VNCSession
     let presentation: RemoteSession
+    let computerID: UUID?
     private var observations = Set<AnyCancellable>()
-    init(engine: VNCSession, presentation: RemoteSession) {
-        self.engine = engine; self.presentation = presentation
+    init(engine: VNCSession, presentation: RemoteSession, computerID: UUID? = nil) {
+        self.engine = engine; self.presentation = presentation; self.computerID = computerID
         presentation.displayView = engine.displayView
         presentation.controlsAvailable = true
         presentation.scaleAvailable = true
         presentation.clipboardAvailable = true
-        presentation.audioAvailable = false
-        presentation.audioEnabled = false
+        presentation.audioAvailable = engine.tunnel.isTunneled
+        presentation.audioEnabled = engine.tunnel.isTunneled && engine.remoteAudioEnabled && !engine.audioMuted
+        presentation.onAudio = { [weak engine] enabled in engine?.audioMuted = !enabled; engine?.remoteAudioEnabled = enabled }
+        presentation.onMatchResolution = { [weak engine] enabled in engine?.fitsRemoteDesktopToWindow = enabled }
+        engine.$canResizeDesktop.sink { [weak presentation, weak engine] in
+            presentation?.resolutionMatchingAvailable = $0
+            presentation?.matchesWindowResolution = $0 && engine?.fitsRemoteDesktopToWindow == true
+        }.store(in: &observations)
+        engine.$fitsRemoteDesktopToWindow.sink { [weak presentation, weak engine] in presentation?.matchesWindowResolution = $0 && engine?.canResizeDesktop == true }.store(in: &observations)
+        engine.$remoteAudioEnabled.sink { [weak presentation, weak engine] in presentation?.audioEnabled = $0 && engine?.audioMuted == false }.store(in: &observations)
+        engine.$audioMuted.sink { [weak presentation, weak engine] in presentation?.audioEnabled = !$0 && engine?.remoteAudioEnabled == true }.store(in: &observations)
         presentation.keyboardReleaseAvailable = true
         presentation.clipboardEnabled = engine.clipboardSyncEnabled
         presentation.onReleaseKeyboard = { [weak engine] in engine?.releaseInput() }
@@ -309,9 +362,24 @@ private final class VNCSessionBinding {
         engine.$stats.sink { [weak presentation] stats in
             presentation?.fps = stats.fps; presentation?.latencyMs = stats.latencyMs; presentation?.bitrateMbps = stats.bitrateMbps
             presentation?.roundTripMs = stats.roundTripMs; presentation?.transport = stats.transport; presentation?.droppedFrames = stats.droppedFrames
+            presentation?.codec = stats.codec.contains("Tight") ? "VNC (Tight/JPEG)" : stats.codec
             let size = stats.resolution.split(separator: "×").compactMap { Double($0) }
             if size.count == 2, size[0] > 0, size[1] > 0 { presentation?.remotePixelSize = CGSize(width: size[0], height: size[1]) }
         }.store(in: &observations)
+    }
+    func update(_ computer: SavedComputer) {
+        let mapping: CommandKeyMapping = computer.commandActsAsControl ? .control : .super
+        if engine.commandKeyMapping != mapping { if engine.state == .streaming { engine.releaseInput() }; engine.commandKeyMapping = mapping }
+        if engine.remoteAudioEnabled != computer.audioEnabled { engine.remoteAudioEnabled = computer.audioEnabled }
+        if engine.fitsRemoteDesktopToWindow != computer.fitsDesktopToWindow { engine.fitsRemoteDesktopToWindow = computer.fitsDesktopToWindow }
+    }
+}
+
+private func tunnel(for computer: SavedComputer) -> RFBTunnel {
+    switch computer.connection {
+    case let .googleCloud(instance, zone, project, iap):
+        return .gcloud(instance: instance, zone: zone, project: project, useIAP: iap, vncPort: computer.vncPort)
+    case let .ssh(destination, port): return .ssh(destination: destination, port: port, vncPort: computer.vncPort)
     }
 }
 

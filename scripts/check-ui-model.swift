@@ -43,6 +43,45 @@ import SwiftUI
         defer { defaults.removePersistentDomain(forName: suite) }
         let preferences = CircePreferences(defaults: defaults)
         let model = CirceModel(preferences: preferences)
+        var cloud = ComputerDraft()
+        cloud.instance = "linux-workstation"; cloud.zone = "us-central1-a"
+        let cloudComputer = try cloud.computer()
+        precondition(cloudComputer.commandActsAsControl && cloudComputer.audioEnabled && cloudComputer.fitsDesktopToWindow)
+        precondition(cloudComputer.vncPort == 5901)
+        if case .googleCloud(_, _, let project, let iap) = cloudComputer.connection { precondition(project == nil && iap) } else { preconditionFailure() }
+        try model.saveComputer(cloudComputer)
+        precondition(CirceModel(preferences: CircePreferences(defaults: defaults)).computers == [cloudComputer])
+        var ssh = ComputerDraft(); ssh.kind = .ssh; ssh.destination = "Dev@my-vm"; ssh.sshPort = "2222"; ssh.display = ":2"
+        let sshComputer = try ssh.computer()
+        precondition(sshComputer.vncPort == 5902)
+        for invalid in ["-oProxyCommand=bad", "user@host command", "ssh://host", "user@host;command", "user@"] {
+            var bad = ssh; bad.destination = invalid; precondition((try? bad.computer()) == nil)
+        }
+        let command = LinuxHostSetup.command(for: sshComputer, scriptURL: URL(fileURLWithPath: "/Applications/Circe's Mac.app/Contents/Resources/Linux/setup-circe-host.sh"))
+        precondition(command.contains("'2222'") && command.contains("'Dev@my-vm'") && command.contains("--display 2") && command.contains("'\"'\"'"))
+        var updatedComputer = cloudComputer; updatedComputer.commandActsAsControl = false
+        try model.saveComputer(updatedComputer)
+        precondition(model.computers.count == 1 && !model.computers[0].commandActsAsControl)
+        var setupCalls = 0, setupConnections = 0
+        var setupCompletion: ((Result<SavedComputer, Error>) -> Void)?
+        model.onSetupComputer = { computer, completion in
+            setupCalls += 1; setupCompletion = completion
+            model.appendSetupOutput("Installing desktop", for: computer.id)
+            model.appendSetupOutput("New VNC password (shown only this time): SECRET12", for: computer.id)
+            model.appendSetupOutput("CIRCE_SETUP_RESULT {\"password\":\"SECRET12\"}", for: computer.id)
+        }
+        model.onConnectComputer = { computer in let session = RemoteSession(name: computer.name, address: computer.detail); session.phase = .streaming; return session }
+        model.setUpComputer(updatedComputer) { _ in setupConnections += 1 }
+        model.setUpComputer(updatedComputer) { _ in preconditionFailure("Duplicate setup must be ignored") }
+        precondition(setupCalls == 1 && model.isSettingUp(updatedComputer.id))
+        precondition(!(model.computerSetups[updatedComputer.id]?.output.contains("SECRET12") ?? true))
+        setupCompletion?(.success(updatedComputer))
+        precondition(setupConnections == 1 && model.computerSetups[updatedComputer.id]?.phase == .complete)
+        precondition(model.computers[0].lastConnected != nil)
+        for id in Array(model.sessions.keys) { model.closeSession(id) }
+        model.removeComputer(updatedComputer.id)
+        precondition(CirceModel(preferences: CircePreferences(defaults: defaults)).computers.isEmpty)
+        preferences.accessibilityHintShown = false
         precondition(!model.claimWelcomePresentation(quietLaunch: true), "Quiet login must not present onboarding")
         precondition(!preferences.hasSeenWelcome, "Quiet login must preserve the first deliberate welcome")
         precondition(model.claimWelcomePresentation(quietLaunch: false))

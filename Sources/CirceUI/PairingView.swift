@@ -18,7 +18,7 @@ struct PairingView: View {
             }
             VStack(spacing: 9) {
                 Text("A little introduction.").font(.system(size: 29, weight: .regular, design: .serif)).tracking(-0.6).accessibilityAddTraits(.isHeader)
-                Text(usePassword ? (session.requiresUsername ? "Sign in with a Mac account on\n\(session.name)." : "Enter the VNC password for\n\(session.name).") : "Enter the six-digit code shown in Circe on\n\(session.name).")
+                Text(usePassword ? (session.requiresUsername ? "Sign in with an account on\n\(session.name)." : "Enter the VNC password for\n\(session.name).") : "Enter the six-digit code shown in Circe on\n\(session.name).")
                     .font(.system(size: 13)).foregroundStyle(CirceStyle.secondaryInk).multilineTextAlignment(.center).lineSpacing(4)
             }
             if usePassword { accountFields } else { pinFields }
@@ -32,7 +32,7 @@ struct PairingView: View {
                 }.frame(width: 270)
             }.buttonStyle(PrimaryButtonStyle()).disabled(!valid || submitted).keyboardShortcut(.defaultAction)
             if session.allowsPIN && session.allowsPassword {
-                Button(usePassword ? "Use a pairing code instead" : "Use a Mac account instead") {
+                Button(usePassword ? "Use a pairing code instead" : "Use an account instead") {
                     usePassword.toggle(); password = ""; pin = ""; submitted = false; focusInput()
                 }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(CirceStyle.violet)
             } else {

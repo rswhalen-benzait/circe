@@ -15,6 +15,13 @@ and password. After that, connections are instant.
 You can also type an address: `studio.local`, `10.0.0.5`, `host:47800`, or `vnc://host` for a
 VNC server.
 
+**Linux and Google Cloud:** choose *Add a computer*. Save an SSH destination or Google Cloud
+instance/zone (IAP is on by default), then connect with one click. *Set up & connect* installs a
+private XFCE desktop and headless audio over SSH, saves the generated VNC password in Keychain,
+and connects. SSH access must already work; automatic setup needs passwordless sudo.
+See [Linux host setup](scripts/linux/README.md) for prerequisites, manual setup, and diagnostics.
+Per-computer keyboard mapping, audio, and desktop resizing are in Settings → Computers.
+
 **While connected:**
 - Every key goes to the remote Mac, including ⌘-Tab, ⌘-Space, ⌘-Q and Mission Control
   (grant Circe *Accessibility* on this Mac for the system-wide shortcuts).

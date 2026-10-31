@@ -167,6 +167,7 @@ public struct SessionView: View {
     }
     private var stats: some View {
         VStack(alignment: .leading, spacing: 7) {
+            if !session.codec.isEmpty { Text(session.codec).font(.system(size: 10, weight: .semibold)).accessibilityLabel("Video codec: \(session.codec)") }
             HStack(spacing: 14) {
                 stat(String(format: "%.0f", session.fps), "fps")
                 stat(measured(session.latencyMs), "ms latency")

@@ -43,6 +43,27 @@ struct PreviewExporter {
             }
             for address in ["circe://studio.local:47800", "vnc://office.local:5900"] { let recent = model.connect(address: address); model.closeSession(recent.id) }
             try save("launcher-recents", LauncherView(model: model).frame(width: 640, height: 760))
+            var cloudDraft = ComputerDraft()
+            cloudDraft.name = "Cloud workstation"; cloudDraft.instance = "linux-workstation"; cloudDraft.zone = "us-central1-a"; cloudDraft.project = "personal-lab"
+            let cloud = try cloudDraft.computer()
+            var sshDraft = ComputerDraft(); sshDraft.kind = .ssh; sshDraft.name = "Linux development"; sshDraft.destination = "dev@linux-box"
+            let linux = try sshDraft.computer()
+            try model.saveComputer(cloud); try model.saveComputer(linux)
+            try save("launcher-computers", LauncherView(model: model).frame(width: 640, height: 850))
+            try save("computer-add", AddComputerView(model: model))
+            try save("computer-google-cloud", AddComputerView(model: model, computer: cloud))
+            try save("computer-ssh", AddComputerView(model: model, computer: linux))
+            try save("settings-computers", CirceSettingsView(model: model, initialTab: .computers))
+            model.onSetupComputer = { computer, _ in
+                model.appendSetupOutput("Installing XFCE and TigerVNC…", for: computer.id)
+                model.appendSetupOutput("VNC will listen on 127.0.0.1:5901", for: computer.id)
+                model.appendSetupOutput("Preparing headless audio…", for: computer.id)
+            }
+            model.setUpComputer(cloud) { _ in }
+            try save("computer-setup-progress", AddComputerView(model: model, computer: cloud))
+            model.onSetupComputer = { _, completion in completion(.failure(ComputerValidationError("SSH sign-in failed. Check your SSH keys and verify the connection in Terminal, then run setup again."))) }
+            model.setUpComputer(linux) { _ in }
+            try save("computer-setup-failed", AddComputerView(model: model, computer: linux))
             try save("hosting", HostingSetupView(model: model))
             model.screenRecordingGranted = true; model.accessibilityGranted = true; model.isHosting = true; model.pairingPIN = "731942"; model.loginItemStatus = .enabled
             model.sharingConnections = [SharingConnection(id: UUID(), name: "Office Mac", isStreaming: true)]
@@ -67,6 +88,8 @@ struct PreviewExporter {
             live.phase = .streaming; live.isDraggingFiles = false; live.showStats = true
             live.fps = 60; live.latencyMs = 4.8; live.bitrateMbps = 42.4; live.roundTripMs = 1.2; live.transport = "UDP"; live.droppedFrames = 12
             try save("session-stats", SessionView(session: live).frame(width: 800, height: 520))
+            live.transport = "IAP"; live.codec = "VNC (Tight/JPEG)"
+            try save("session-stats-linux", SessionView(session: live).frame(width: 800, height: 520))
             let ended = RemoteSession(name: "Studio Mac", address: "studio.local")
             ended.phase = .disconnected("The remote Mac stopped responding. Check that it is awake and connected to the network.")
             try save("disconnected", SessionView(session: ended).frame(width: 800, height: 520))

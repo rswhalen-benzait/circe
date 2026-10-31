@@ -1,6 +1,6 @@
 import SwiftUI
 
-public enum CirceSettingsTab: Hashable { case general, sharing, about }
+public enum CirceSettingsTab: Hashable { case general, computers, sharing, about }
 
 public struct CirceSettingsView: View {
     @CirceViewState<CirceSettingsTab> private var selectedTab: CirceSettingsTab
@@ -45,6 +45,7 @@ public struct CirceSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped).tag(CirceSettingsTab.general).tabItem { Label("General", systemImage: "gearshape") }
+            ComputerSettingsView(model: model).tag(CirceSettingsTab.computers).tabItem { Label("Computers", systemImage: "server.rack") }
             Form {
                 Section("Access") {
                     Toggle("Allow Mac account sign-in", isOn: Binding(get: { model.allowPasswordAuthentication }, set: { model.setPasswordAuthentication($0) }))

@@ -97,6 +97,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var bitrateMbps: Double = 0
     @Published public var roundTripMs: Double = 0
     @Published public var transport = ""
+    @Published public var codec = ""
     @Published public var droppedFrames = 0
     @Published public var scale: DisplayScale = .fit
     @Published public var matchesWindowResolution = false
@@ -166,6 +167,8 @@ public final class RemoteSession: ObservableObject, Identifiable {
 @MainActor
 public final class CirceModel: ObservableObject {
     @Published public var hosts: [NearbyMac] = []
+    @Published public private(set) var computers: [SavedComputer] = []
+    @Published public private(set) var computerSetups: [UUID: ComputerSetupStatus] = [:]
     @Published public private(set) var recentConnections: [RecentConnection] = []
     @Published public var sessions: [UUID: RemoteSession] = [:]
     @Published public var isHosting = false
@@ -187,9 +190,13 @@ public final class CirceModel: ObservableObject {
     public let preferences: CircePreferences
     private var preferenceObservation: AnyCancellable?
     private let recentStore: RecentConnectionsStore
+    private let computerStore: SavedComputersStore
     private var recentObservations: [UUID: AnyCancellable] = [:]
     public let computerName = Host.current().localizedName ?? "This Mac"
     var onConnect: ((NearbyMac?, String) -> RemoteSession)?
+    var onConnectComputer: ((SavedComputer) -> RemoteSession)?
+    var onUpdateComputer: ((SavedComputer) -> Void)?
+    var onSetupComputer: ((SavedComputer, @escaping (Result<SavedComputer, Error>) -> Void) -> Void)?
     var onHostToggle: ((Bool) -> Void)?
     var onRefreshPermissions: (() -> Void)?
     var onRequestScreen: (() -> Void)?
@@ -205,6 +212,8 @@ public final class CirceModel: ObservableObject {
     public init(preferences: CircePreferences? = nil) {
         self.preferences = preferences ?? CircePreferences()
         recentStore = RecentConnectionsStore(defaults: self.preferences.storageDefaults)
+        computerStore = SavedComputersStore(defaults: self.preferences.storageDefaults)
+        computers = computerStore.computers
         recentConnections = recentStore.connections
         preferenceObservation = self.preferences.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
@@ -216,6 +225,57 @@ public final class CirceModel: ObservableObject {
     public func connect(to recent: RecentConnection) -> RemoteSession { begin(host: recent.nearbyHost, address: recent.address) }
     public func removeRecent(_ id: String) { recentStore.remove(id); recentConnections = recentStore.connections }
     public func clearRecents() { recentStore.clear(); recentConnections = [] }
+    public func saveComputer(_ computer: SavedComputer) throws {
+        try computerStore.save(computer); computers = computerStore.computers; onUpdateComputer?(computer)
+    }
+    public func removeComputer(_ id: UUID) { computerStore.remove(id); computers = computerStore.computers }
+    public func isSettingUp(_ id: UUID) -> Bool { computerSetups[id]?.phase == .running }
+    public func appendSetupOutput(_ line: String, for id: UUID) {
+        guard var status = computerSetups[id], status.phase == .running else { return }
+        let safe = Self.redactSetupOutput(line)
+        guard !safe.isEmpty else { return }
+        status.output = String((status.output + safe + "\n").suffix(16_000))
+        computerSetups[id] = status
+    }
+    public static func redactSetupOutput(_ output: String) -> String {
+        output.components(separatedBy: .newlines).compactMap { line -> String? in
+            if line.contains("CIRCE_SETUP_RESULT ") { return nil }
+            if line.contains("New VNC password (shown only this time):") { return "Generated a new VNC password." }
+            return line
+        }.joined(separator: "\n")
+    }
+    public func setUpComputer(_ computer: SavedComputer, onConnected: @escaping (RemoteSession) -> Void) {
+        guard !isSettingUp(computer.id) else { return }
+        computerSetups[computer.id] = ComputerSetupStatus()
+        guard let onSetupComputer else {
+            computerSetups[computer.id]?.phase = .failed("Setup is unavailable in this build.")
+            return
+        }
+        onSetupComputer(computer) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let updated):
+                do {
+                    try self.saveComputer(updated)
+                    self.computerSetups[computer.id]?.phase = .complete
+                    onConnected(self.connect(to: updated))
+                } catch { self.computerSetups[computer.id]?.phase = .failed(error.localizedDescription) }
+            case .failure(let error):
+                self.computerSetups[computer.id]?.phase = .failed(Self.redactSetupOutput(String(describing: error)))
+            }
+        }
+    }
+    @discardableResult public func connect(to computer: SavedComputer) -> RemoteSession {
+        let session = onConnectComputer?(computer) ?? RemoteSession(name: computer.name, address: computer.detail)
+        if onConnectComputer == nil { session.phase = .disconnected("Secure Linux connections are unavailable in this build.") }
+        register(session)
+        recentObservations[session.id] = session.$phase.filter { $0 == .streaming }.prefix(1).sink { [weak self, weak session] _ in
+            guard let self, let session else { return }
+            self.sessionStarted(session)
+            self.computerStore.connected(computer.id); self.computers = self.computerStore.computers
+        }
+        return session
+    }
     /// Claim before presentation so another launcher, dismissal, or relaunch cannot show it again.
     /// Background login leaves it unclaimed for the first deliberate visit to the launcher.
     public func claimWelcomePresentation(quietLaunch: Bool) -> Bool {
@@ -226,20 +286,24 @@ public final class CirceModel: ObservableObject {
     private func begin(host: NearbyMac?, address: String) -> RemoteSession {
         let session = onConnect?(host, address) ?? RemoteSession(name: host?.name ?? address, address: address)
         if onConnect == nil { session.phase = .disconnected("The connection engine is not available in this preview.") }
-        session.showStats = preferences.showStats
-        sessions[session.id] = session
-        session.onRequestAccessibility = { [weak self] in self?.requestAccessibility() }
+        register(session)
         recentObservations[session.id] = session.$phase.filter { $0 == .streaming }.prefix(1).sink { [weak self, weak session] _ in
             guard let self, let session else { return }
-            self.refreshPermissions()
-            if !self.accessibilityGranted && self.preferences.captureShortcuts && !self.preferences.accessibilityHintShown {
-                self.preferences.accessibilityHintShown = true
-                session.showAccessibilityHint = true
-            }
+            self.sessionStarted(session)
             self.recentStore.record(host: host, address: address, name: session.name)
             self.recentConnections = self.recentStore.connections
         }
         return session
+    }
+    private func register(_ session: RemoteSession) {
+        session.showStats = preferences.showStats; sessions[session.id] = session
+        session.onRequestAccessibility = { [weak self] in self?.requestAccessibility() }
+    }
+    private func sessionStarted(_ session: RemoteSession) {
+        refreshPermissions()
+        if !accessibilityGranted && preferences.captureShortcuts && !preferences.accessibilityHintShown {
+            preferences.accessibilityHintShown = true; session.showAccessibilityHint = true
+        }
     }
     public func closeSession(_ id: UUID) { sessions[id]?.disconnect(); sessions.removeValue(forKey: id); recentObservations.removeValue(forKey: id)?.cancel(); onCloseSession?(id) }
     public func setHosting(_ enabled: Bool) { hostError = nil; preferences.shareThisMac = enabled; onHostToggle?(enabled) }
