@@ -105,7 +105,20 @@ public final class ClientSession: ObservableObject, Identifiable {
         self.init(endpoint: ep, name: address, config: config)
     }
 
+    private var wakeObserver: NSObjectProtocol?
+
     public func connect() {
+        if wakeObserver == nil {
+            // After this Mac sleeps the old socket is dead; reconnect right away instead of waiting for keepalives.
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.userClosed, self.state == .streaming else { return }
+                    self.state = .reconnecting(attempt: 1)
+                    self.link.open(config: self.config)
+                }
+            }
+        }
         userClosed = false
         reconnectAttempt = 0
         state = .connecting
