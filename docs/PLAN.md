@@ -25,6 +25,13 @@ clipboard, files, cursor), effortless disconnect.
 - Codex:  CirceUI, Circe app target sources (Sources/Circe), app icon/assets, scripts/bundle.sh, CirceVNC.
 - Contract between engine and UI: `Sources/CirceClient/PublicAPI.swift` + `Sources/CirceHost/PublicAPI.swift` (Claude owns; Codex requests changes via chat).
 
+## Status (2026-10-30)
+Done: loopback E2E (synthetic capture; real capture needs Screen Recording on the host), pairing (PIN/password, TOFU keys),
+auto-reconnect, HEVC low-latency, UDP+adaptive FEC w/ TCP fallback, adaptive bitrate, Opus audio, clipboard (focus-gated),
+local cursor, ⌘-key capture w/ ⌃⌥⌘ escape hatch, file drag-drop, dynamic resolution, video pause when hidden, VNC/ARD client
+(verified vs real macOS Screen Sharing handshake + pixel-exact fixture), Bonjour for both, full SwiftUI app + icon + bundle.
+Open: mic forwarding, NAT traversal, login-window access (privileged helper), 4:4:4 text mode, host-cursor-hidden sync.
+
 ## Milestones (ship each, then iterate)
 1. Loopback E2E: host captures + encodes, client decodes + displays, input works. (localhost)
 2. App UX: discovery, one-click connect, pairing once, fullscreen/window, auto-hide toolbar, clean disconnect.
