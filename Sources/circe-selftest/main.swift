@@ -494,6 +494,21 @@ if let i = CommandLine.arguments.firstIndex(of: "--decode-flv"), i + 2 < Command
     exit(frames.isEmpty || decoded.count != frames.count ? 1 : 0)
 }
 
+// `circe-selftest --decode-ogg PATH`: decode an audio helper's Ogg Opus; prints packets and RMS.
+if let i = CommandLine.arguments.firstIndex(of: "--decode-ogg"), i + 1 < CommandLine.arguments.count {
+    var stream = RemoteAudioStream()
+    let packets = (try? stream.feed(try! Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[i + 1])))) ?? []
+    let dec = OpusDecoder()!
+    let decoded = packets.compactMap { dec.decode($0) }
+    let all = decoded.flatMap { $0 }
+    let tail = all.count > 96_000 ? all[(all.count / 2 - 24_000)..<(all.count / 2 + 24_000)] : all[...] // middle 0.5 s
+    if CommandLine.arguments.contains("-v") { print(Dictionary(grouping: decoded.map { $0.count / 2 }, by: { $0 }).mapValues(\.count)) }
+    let rms = (tail.reduce(0) { $0 + $1 * $1 } / Float(max(tail.count, 1))).squareRoot()
+    print(String(format: "kind=%@ packets=%d decoded=%d frames/packet=%d rms=%.3f", "\(stream.kind)", packets.count, decoded.count,
+                 (decoded.first?.count ?? 0) / 2, rms))
+    exit(stream.kind == .opus && !packets.isEmpty && decoded.count == packets.count ? 0 : 1)
+}
+
 // Fixture writer for scripts/test/linux-e2e.sh: `circe-selftest --write-test-ogg PATH`.
 if let i = CommandLine.arguments.firstIndex(of: "--write-test-ogg"), i + 1 < CommandLine.arguments.count {
     try! OggTests.opusStream(seconds: 3).write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))

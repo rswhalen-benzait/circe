@@ -59,5 +59,12 @@ if [[ -n "${CIRCE_TEST_FFMPEG:-}" ]]; then
       bash scripts/linux/circe-video.sh --display 1 > "$TMP/real.flv" 2>/dev/null & p=$!; sleep 2; pkill -TERM -P $p; kill $p ) 2>/dev/null
   check "real x264 stream decodes in VideoToolbox with correct colour" "centre=1F3EDD" \
     .build/debug/circe-selftest --decode-flv "$TMP/real.flv" 1280x800
+  # Same Opus settings as scripts/linux/circe-audio.sh, from a mono 440 Hz sine (−3 dB when upmixed).
+  "$CIRCE_TEST_FFMPEG" -nostdin -hide_banner -loglevel error -f lavfi -i sine=frequency=440:sample_rate=48000 -t 2 -ac 2 \
+    -c:a libopus -application lowdelay -frame_duration 10 -b:a 128k -vbr constrained -compression_level 5 -ar 48000 \
+    -mapping_family 0 -f ogg -page_duration 20000 -flush_packets 1 -y "$TMP/real.ogg"
+  check "real libopus Ogg decodes (10 ms packets, correct level)" "rms=0.06" .build/debug/circe-selftest --decode-ogg "$TMP/real.ogg"
+  check "real libopus Ogg plays through the client" "mismatches=0" \
+    env FAKE_AUDIO_OGG="$TMP/real.ogg" $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --expect-audio --expect-audio-encoding opus
 fi
 echo; echo "$pass passed, $fail failed"; exit $fail
