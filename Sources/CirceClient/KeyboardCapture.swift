@@ -6,23 +6,23 @@ import CoreGraphics
 /// keys etc. go to the remote Mac — just like sitting in front of it.
 /// Needs Accessibility permission; without it, the session view falls back to normal key events.
 /// Escape hatch: holding ⌃⌥⌘ passes keys through to this Mac.
-final class KeyboardCapture {
+public final class KeyboardCapture {
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private let handler: (CGEvent) -> Void
 
-    static let escapeFlags: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
+    public static let escapeFlags: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
 
-    var isRunning: Bool { tap != nil }
+    public var isRunning: Bool { tap != nil }
 
-    init(handler: @escaping (CGEvent) -> Void) {
+    public init(handler: @escaping (CGEvent) -> Void) {
         self.handler = handler
     }
 
-    static var isPermitted: Bool { AXIsProcessTrusted() }
+    public static var isPermitted: Bool { AXIsProcessTrusted() }
 
     @discardableResult
-    func start() -> Bool {
+    public func start() -> Bool {
         guard tap == nil, Self.isPermitted else { return tap != nil }
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
@@ -39,7 +39,7 @@ final class KeyboardCapture {
         return true
     }
 
-    func stop() {
+    public func stop() {
         if let t = tap { CGEvent.tapEnable(tap: t, enable: false) }
         if let s = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), s, .commonModes) }
         tap = nil

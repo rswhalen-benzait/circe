@@ -2,6 +2,7 @@ import AppKit
 import CirceClient
 import CirceCore
 import CirceHost
+import CirceVNC
 import Foundation
 
 // circe-cli — headless host / client used for end-to-end testing.
@@ -107,6 +108,49 @@ func runConnect() {
     sessionRef = session
 }
 
+@MainActor var vncRef: VNCSession?
+
+/// circe-cli vnc <address> [--seconds N] [--user U --password P] [--expect x,y=0xRRGGBB ...]
+@MainActor
+func runVNC() {
+    guard args.count >= 2, let session = VNCSession(address: args[1]) else { log("usage: circe-cli vnc <address>"); exit(2) }
+    let seconds = value("--seconds").flatMap(Double.init) ?? 3
+    var lastState: ClientState?
+    var start: Date?
+    Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+        MainActor.assumeIsolated {
+            if session.state != lastState {
+                lastState = session.state
+                log("state: \(session.state)")
+                if case .authenticating = session.state {
+                    guard let pw = value("--password") else { log("server requires credentials (username needed: \(session.needsUsername))"); exit(3) }
+                    session.submitPassword(username: value("--user") ?? NSUserName(), password: pw)
+                }
+                if case .streaming = session.state { start = Date() }
+                if case .disconnected(let r) = session.state { log("disconnected: \(r ?? "-")"); exit(4) }
+            }
+            guard let start, Date().timeIntervalSince(start) >= seconds else { return }
+            var bad = 0
+            var i = 0
+            while i < args.count {
+                if args[i] == "--expect", i + 1 < args.count {
+                    let parts = args[i + 1].split(separator: "=")
+                    let xy = parts[0].split(separator: ",").compactMap { Int($0) }
+                    let want = UInt32(parts[1].dropFirst(2), radix: 16)! | 0xFF00_0000
+                    let got = session.samplePixel(x: xy[0], y: xy[1]) ?? 0
+                    if got != want { bad += 1; log(String(format: "pixel (%d,%d) = %08X, expected %08X", xy[0], xy[1], got, want)) }
+                }
+                i += 1
+            }
+            log(String(format: "RESULT %@ %@ fps=%.0f pixelMismatches=%d", session.stats.codec, session.stats.resolution, session.stats.fps, bad))
+            session.disconnect()
+            exit(bad == 0 ? 0 : 6)
+        }
+    }
+    session.connect()
+    vncRef = session
+}
+
 @MainActor
 func runDisplays() {
     Task {
@@ -130,6 +174,7 @@ MainActor.assumeIsolated {
     case "host": runHost()
     case "connect": runConnect()
     case "displays": runDisplays()
+    case "vnc": runVNC()
     default:
         log("usage: circe-cli host [--open] [--port N] | connect <address> [--seconds N] [--pin CODE] [--window]")
         exit(2)
