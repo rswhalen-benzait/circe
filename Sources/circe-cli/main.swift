@@ -144,7 +144,7 @@ func runVNC() {
     session.clipboardSyncEnabled = false // never touch this Mac's real clipboard from tests
     session.audioMuted = true            // verify the audio stream without playing it
     session.savesCredentials = false     // and never write test passwords to the Keychain
-    if args.contains("--no-video") { session.videoStreamEnabled = false }
+    if args.contains("--no-video") { session.remoteVideoEnabled = false }
     let seconds = value("--seconds").flatMap(Double.init) ?? 3
     let tolerance = value("--tolerance").flatMap(Int.init) ?? 0
     var lastState: ClientState?
@@ -191,7 +191,7 @@ func runVNC() {
             }
             if args.contains("--expect-audio"), !session.audioActive { bad += 1; log("audio: not playing") }
             if args.contains("--expect-video") {
-                if case .h264 = session.videoMode {} else { bad += 1; log("video: \(session.videoMode)") }
+                if case .h264 = session.videoMode {} else { bad += 1; log("video: \(session.videoMode) \(session.videoFallbackReason ?? "")") }
                 if session.videoDecodeFailed { bad += 1; log("video: decoder failed") }
                 // Xvnc's pixels must stop once video is up (a few in-flight updates are fine).
                 if session.vncUpdatesDuringVideo > 5 { bad += 1; log("video: VNC still sent \(session.vncUpdatesDuringVideo) pixel updates") }
@@ -199,9 +199,9 @@ func runVNC() {
             if let minFPS = value("--min-fps").flatMap(Double.init), session.stats.fps < minFPS {
                 bad += 1; log("fps \(session.stats.fps) < \(minFPS)")
             }
-            log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ video=%d mismatches=%d", session.stats.codec,
+            log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ video=%d videoLimit=%d mismatches=%d", session.stats.codec,
                        session.stats.transport, session.stats.resolution, session.stats.fps,
-                       session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", session.videoFramesShown, bad))
+                       session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", session.videoFramesShown, session.videoBitrateKbps ?? 0, bad))
             session.disconnect()
             exit(bad == 0 ? 0 : 6)
         }

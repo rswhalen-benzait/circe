@@ -41,9 +41,11 @@ public final class VNCSession: ObservableObject, Identifiable {
     @Published public private(set) var canResizeDesktop = false
     /// Stream the desktop as hardware-decoded H.264 from Circe's Linux helper (SSH/IAP only), with
     /// VNC kept for input, clipboard and cursor. Falls back to VNC pixels whenever video isn't available.
-    @Published public var videoStreamEnabled = true { didSet { updateVideo() } }
+    @Published public var remoteVideoEnabled = true { didSet { updateVideo() } }
     /// What is currently drawing the screen.
     @Published public private(set) var videoMode: VideoMode = .vnc
+    /// Why the screen is VNC pixels although video is enabled (helper missing, stream failed…).
+    @Published public private(set) var videoFallbackReason: String?
     public enum VideoMode: Equatable, Sendable {
         case vnc
         case starting
@@ -79,8 +81,9 @@ public final class VNCSession: ObservableObject, Identifiable {
     private var videoPipe: ProcessPipe?
     private var videoRetries = 0
     private var videoFPS = RateMeter()
-    /// Exit code the helper uses for "can't stream video here" (no ffmpeg, no X display…): don't retry.
-    static let videoUnavailableExit: Int32 = 3
+    /// Bitrate ceiling after the stream fell behind the network (nil = the helper's own choice).
+    public private(set) var videoBitrateKbps: Int?
+    private var videoConfig: VideoConfig?
     /// Remember credentials in the Keychain (off for tests / one-off connections).
     public var savesCredentials = true
 
@@ -346,11 +349,38 @@ public final class VNCSession: ObservableObject, Identifiable {
             case .direct: return 0
             }
         }()
-        return "exec \"$HOME/.local/libexec/circe/video\" --display \(display) --fps 60"
+        var cmd = "exec \"$HOME/.local/libexec/circe/video\" --display \(display)"
+        if let kbps = videoBitrateKbps { cmd += " --bitrate-kbps \(kbps)" }
+        return cmd
+    }
+
+    /// The helper's `CIRCE_VIDEO_CONFIG {json}` stderr line (what it chose, not proof of frames).
+    struct VideoConfig: Decodable, Equatable {
+        var encoder: String
+        var width: Int?
+        var height: Int?
+        var fps: Int?
+        var bitrateKbps: Int?
+    }
+
+    static func reportedConfig(_ stderr: String) -> VideoConfig? {
+        let marker = "CIRCE_VIDEO_CONFIG "
+        guard let line = stderr.split(separator: "\n").last(where: { $0.hasPrefix(marker) }) else { return nil }
+        return try? JSONDecoder().decode(VideoConfig.self, from: Data(line.dropFirst(marker.count).utf8))
+    }
+
+    /// Helper exit status → reason to stay on VNC for this connection (nil = transient, retry).
+    static func videoUnavailable(exitCode: Int32) -> String? {
+        switch exitCode {
+        case 64: return "This Mac and the machine's video helper don't agree on options. Re-run setup on the machine."
+        case 69, 127: return "Smooth video isn't installed on the machine (needs ffmpeg). Re-run setup to add it."
+        case 77: return "The video helper couldn't open the remote desktop's display."
+        default: return nil
+        }
     }
 
     private func updateVideo() {
-        guard videoStreamEnabled, state == .streaming, tunnel.isTunneled, !displayView.isApple else { stopVideo(); return }
+        guard remoteVideoEnabled, state == .streaming, tunnel.isTunneled, !displayView.isApple else { stopVideo(); return }
         guard videoPipe == nil, let (exe, args) = try? tunnel.remoteCommand(remoteVideoCommand()) else { return }
         let pipe = ProcessPipe(executable: exe, arguments: args)
         guard (try? pipe.start()) != nil else { return }
@@ -362,10 +392,20 @@ public final class VNCSession: ObservableObject, Identifiable {
         let reader = Thread { [weak self, weak pipe] in
             var framer = LinuxVideoFramer()
             var started = false
+            var behindSince: UInt64?
             while let pipe {
                 let chunk = pipe.read()
                 if chunk.isEmpty { break }
                 guard let frames = try? framer.feed(chunk) else { pipe.terminate(); break }
+                // TCP never drops: when the network can't carry the bitrate, frames queue up and the
+                // picture drifts behind. Seconds of sustained lag → restart lighter (fresh, empty pipe).
+                if framer.lagMillis > Self.maxVideoLagMillis {
+                    let now = Clock.micros()
+                    if now - (behindSince ?? now) > 1_500_000 {
+                        DispatchQueue.main.async { MainActor.assumeIsolated { self?.videoFellBehind(pipeRef) } }
+                        behindSince = nil
+                    } else if behindSince == nil { behindSince = now }
+                } else { behindSince = nil }
                 for f in frames {
                     let first = !started && f.isKeyframe
                     if first { started = true }
@@ -388,7 +428,8 @@ public final class VNCSession: ObservableObject, Identifiable {
                     guard let self, self.videoPipe === pipeRef else { return }
                     self.stopVideo()
                     // Not installed / not possible on this machine: VNC pixels it is.
-                    guard code != Self.videoUnavailableExit && code != 127 else { return }
+                    if let reason = Self.videoUnavailable(exitCode: code) { self.videoFallbackReason = reason; return }
+                    self.videoFallbackReason = "The video stream stopped; showing VNC until it's back."
                     self.videoRetries += 1
                     guard self.videoRetries <= 5, self.state == .streaming else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.updateVideo() }
@@ -404,20 +445,22 @@ public final class VNCSession: ObservableObject, Identifiable {
     private func videoStarted(_ renderer: VideoRenderer, pipe: ProcessPipe) {
         video = renderer
         videoRetries = 0
+        videoFallbackReason = nil
         displayView.setVideoLayer(renderer.layer)
         client?.setPixelsSuppressed(true)
-        let encoder = Self.reportedEncoder(pipe.errorOutput) ?? "H.264"
+        videoConfig = Self.reportedConfig(pipe.errorOutput)
+        let encoder = videoConfig?.encoder ?? "H.264"
         videoMode = .h264(encoder: encoder)
         stats.codec = "H.264 · \(encoder)"
     }
 
-    /// The helper announces `CIRCE_VIDEO encoder=<name> …` on stderr.
-    static func reportedEncoder(_ stderr: String) -> String? {
-        guard let line = stderr.split(separator: "\n").last(where: { $0.hasPrefix("CIRCE_VIDEO ") }) else { return nil }
-        for field in line.split(separator: " ") where field.hasPrefix("encoder=") {
-            return String(field.dropFirst("encoder=".count))
-        }
-        return nil
+    static let maxVideoLagMillis = 350
+
+    private func videoFellBehind(_ pipe: ProcessPipe) {
+        guard videoPipe === pipe else { return }
+        let current = videoBitrateKbps ?? videoConfig?.bitrateKbps ?? 6000
+        videoBitrateKbps = max(1000, current * 6 / 10)
+        restartVideo()
     }
 
     private func restartVideo() {

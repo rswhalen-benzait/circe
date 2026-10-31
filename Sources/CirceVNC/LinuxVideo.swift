@@ -124,6 +124,9 @@ struct LinuxVideoFramer {
     private var sets: [Data] = []
     private var frameNumber: UInt32 = 0
     private var origin: UInt64?
+    private var ptsOrigin: UInt64?
+    /// How far the newest frame arrived behind the best-ever arrival (≈ queueing delay), ms.
+    private(set) var lagMillis = 0
 
     mutating func feed(_ chunk: Data) throws -> [VideoFrame] {
         var frames: [VideoFrame] = []
@@ -134,10 +137,16 @@ struct LinuxVideoFramer {
             case let .frame(key, millis, data):
                 guard !sets.isEmpty else { continue }
                 frameNumber &+= 1
-                // Present immediately on arrival; the encoder clock only orders samples.
-                let base = origin ?? Clock.micros() - UInt64(millis) * 1000
+                // Present immediately on arrival; the encoder clock only orders samples. The earliest
+                // (arrival − timestamp) seen is the no-queue baseline; growth beyond it is lag.
+                let now = Clock.micros()
+                let offset = now &- UInt64(millis) * 1000
+                let base = min(origin ?? offset, offset)
                 origin = base
-                frames.append(VideoFrame(frameNumber: frameNumber, captureMicros: base + UInt64(millis) * 1000,
+                lagMillis = Int((offset - base) / 1000)
+                let pts = ptsOrigin ?? offset // fixed, so timestamps stay monotonic
+                ptsOrigin = pts
+                frames.append(VideoFrame(frameNumber: frameNumber, captureMicros: pts + UInt64(millis) * 1000,
                                          flags: key ? VideoFrame.flagKeyframe : 0,
                                          parameterSets: key ? sets : [], data: data))
             }

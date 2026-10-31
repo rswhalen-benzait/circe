@@ -78,11 +78,14 @@ enum SSHCommand {
     }
 
     /// Non-interactive (keys / ssh-agent only — a GUI app can't answer a tty prompt), fast dead-peer
-    /// detection, and first-contact host keys accepted then pinned in known_hosts.
+    /// detection, first-contact host keys accepted then pinned in known_hosts, and no connection sharing.
     static func base(port: Int?) -> [String] {
         var a = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=5",
                  "-o", "ServerAliveCountMax=3", "-o", "StrictHostKeyChecking=accept-new",
-                 "-o", "ExitOnForwardFailure=yes", "-o", "LogLevel=ERROR"]
+                 "-o", "ExitOnForwardFailure=yes", "-o", "LogLevel=ERROR",
+                 // Own TCP connection per channel: a user's ControlMaster would otherwise put video,
+                 // audio and input back into one stream, each waiting behind the others.
+                 "-o", "ControlMaster=no", "-o", "ControlPath=none"]
         if let port { a += ["-p", "\(port)"] }
         return a
     }

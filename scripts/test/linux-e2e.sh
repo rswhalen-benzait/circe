@@ -38,6 +38,8 @@ check "no video helper on the VM falls back to VNC" "VNC · Tight" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --min-fps 10
 check "video recovers after the stream dies" "mismatches=0" \
   env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_EXIT_AFTER=1 FAKE_VIDEO_RUN=$$ $CLI vnc --ssh t@vm --display 22 --password x --seconds 5 --expect-video
+check "video that falls behind restarts at a lower bitrate" "videoLimit=3600 mismatches=0" \
+  env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_LAG=1 $CLI vnc --ssh t@vm --display 22 --password x --seconds 6 --expect-video
 check "Plain auth refused without a tunnel" "unencrypted" $CLI vnc 127.0.0.1:5921
 check "wrong password is reported" "Authentication failed" $CLI vnc --ssh t@vm --display 21 --user circe --password nope
 check "ssh key refused is explained" "SSH refused the login" env FAKE_SSH_FAIL="Permission denied (publickey)." $CLI vnc --ssh t@vm --display 21

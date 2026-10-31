@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # Fake Circe video helper: replays FAKE_VIDEO_FLV (an H.264 FLV) at 60 fps, looping its frames.
-# Unset FAKE_VIDEO_FLV = "video not possible here" (exit 3), like a VM without ffmpeg.
+# Unset FAKE_VIDEO_FLV = "video not possible here" (exit 69), like a VM without ffmpeg.
+# FAKE_VIDEO_LAG=1: frames arrive 3x slower than their timestamps advance (a link that can't keep up) until restarted with --bitrate-kbps.
 # FAKE_VIDEO_EXIT_AFTER=N: the stream dies after N seconds on the first run only (FAKE_VIDEO_RUN tags the run).
-import os, struct, sys, time
+import json, os, struct, sys, time
 path = os.environ.get("FAKE_VIDEO_FLV")
 if not path:
-    print("circe-video: ffmpeg is not installed", file=sys.stderr); sys.exit(3)
+    print("circe-video: ffmpeg is not installed", file=sys.stderr); sys.exit(69)
 args = sys.argv[1:]
 assert "--display" in args, args
 data = open(path, "rb").read()
@@ -17,14 +18,15 @@ flag = os.path.join(os.environ.get("TMPDIR", "/tmp"), "circe-fake-video-" + os.e
 limit = float(os.environ.get("FAKE_VIDEO_EXIT_AFTER", "0"))
 if limit and os.path.exists(flag): limit = 0
 if limit: open(flag, "w").close()
-print("CIRCE_VIDEO encoder=x264 width=320 height=240 fps=60", file=sys.stderr, flush=True)
+lag = os.environ.get("FAKE_VIDEO_LAG") == "1" and "--bitrate-kbps" not in args
+print("CIRCE_VIDEO_CONFIG " + json.dumps({"version": 1, "codec": "h264", "container": "flv", "encoder": "x264", "sourceWidth": 320, "sourceHeight": 240, "width": 320, "height": 240, "fps": 60, "bitrateKbps": 6000, "threads": 1}), file=sys.stderr, flush=True)
 out = sys.stdout.buffer
 out.write(header + tags[0]); out.flush()  # sequence header
 t0, k = time.time(), 0
 while True:
     if limit and time.time() - t0 > limit: sys.exit(1)
     tag = bytearray(tags[1 + k % (len(tags) - 1)])
-    ms = int(k * 1000 / 60)  # keep timestamps increasing across loops
+    ms = int(k * 1000 / 60 / (3 if lag else 1))  # keep timestamps increasing across loops
     tag[4:7] = (ms & 0xFFFFFF).to_bytes(3, "big"); tag[7] = ms >> 24 & 255
     out.write(tag); out.flush()
     k += 1
