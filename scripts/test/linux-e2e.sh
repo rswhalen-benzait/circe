@@ -1,11 +1,11 @@
 #!/bin/bash
 # End-to-end checks for Circe's Linux / cloud path without a real VM:
-# fake ssh (maps -W onto nc) + fake TigerVNC (VeNCrypt, Tight/JPEG, resize, UTF-8 clipboard) + fake parec.
+# fake ssh (maps -W onto nc) + fake TigerVNC (VeNCrypt, Tight/JPEG, resize, UTF-8 clipboard) + fake parec + fake H.264 video helper.
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 swift build --product circe-cli >/dev/null 2>&1 || { echo "build failed"; exit 1; }
 CLI=.build/debug/circe-cli
-TMP=$(mktemp -d); trap 'pkill -f fake_tigervnc.py; rm -rf "$TMP" "${TMPDIR:-/tmp}"/circe-fake-parec-$$' EXIT
+TMP=$(mktemp -d); trap 'pkill -f fake_tigervnc.py; rm -rf "$TMP" "${TMPDIR:-/tmp}"/circe-fake-parec-$$ "${TMPDIR:-/tmp}"/circe-fake-video-$$' EXIT
 export CIRCE_SSH_PATH=$PWD/scripts/test/fake-ssh
 python3 - "$TMP/blue.png" <<'PY'
 import struct, sys, zlib
@@ -14,6 +14,7 @@ raw = b"".join(b"\0" + b"\x00\x00\xff" * w for _ in range(h))
 c = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
 open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + c(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + c(b"IDAT", zlib.compress(raw)) + c(b"IEND", b""))
 PY
+swift scripts/test/make-flv.swift "$TMP/desk.flv" 120 320x240 >/dev/null || { echo "make-flv failed"; exit 1; }
 sips -s format jpeg -s formatOptions 90 "$TMP/blue.png" --out "$TMP/blue.jpg" >/dev/null
 python3 scripts/test/fake_tigervnc.py 5921 plain "$TMP/blue.jpg" > "$TMP/plain.out" 2>/dev/null &
 python3 scripts/test/fake_tigervnc.py 5922 vncauth "$TMP/blue.jpg" > "$TMP/vnc.out" 2>/dev/null &
@@ -31,6 +32,12 @@ check "continuous updates stream without requests (fps>10)" "mismatches=0" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 3 --min-fps 10
 check "audio recovers after the remote audio stream ends" "mismatches=0" \
   env FAKE_PAREC_EXIT_AFTER=1 FAKE_PAREC_RUN=$$ $CLI vnc --ssh t@vm --display 22 --password x --seconds 5 --expect-audio
+check "H.264 video replaces VNC pixels (60 fps, VNC quiet)" "mismatches=0" \
+  env FAKE_VIDEO_FLV="$TMP/desk.flv" $CLI vnc --ssh t@vm --display 22 --password x --seconds 3 --expect-video --min-fps 45 --expect-audio
+check "no video helper on the VM falls back to VNC" "VNC · Tight" \
+  $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --min-fps 10
+check "video recovers after the stream dies" "mismatches=0" \
+  env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_EXIT_AFTER=1 FAKE_VIDEO_RUN=$$ $CLI vnc --ssh t@vm --display 22 --password x --seconds 5 --expect-video
 check "Plain auth refused without a tunnel" "unencrypted" $CLI vnc 127.0.0.1:5921
 check "wrong password is reported" "Authentication failed" $CLI vnc --ssh t@vm --display 21 --user circe --password nope
 check "ssh key refused is explained" "SSH refused the login" env FAKE_SSH_FAIL="Permission denied (publickey)." $CLI vnc --ssh t@vm --display 21
