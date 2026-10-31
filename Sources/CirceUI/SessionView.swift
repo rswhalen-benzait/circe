@@ -157,13 +157,26 @@ public struct SessionView: View {
             .buttonStyle(.plain).help(label).accessibilityLabel(label)
     }
     private var stats: some View {
-        HStack(spacing: 14) {
-            stat(String(format: "%.0f", session.fps), "fps")
-            stat(String(format: "%.1f", session.latencyMs), "ms")
-            stat(String(format: "%.1f", session.bitrateMbps), "Mb/s")
-        }.padding(.horizontal, 13).padding(.vertical, 9).background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 14) {
+                stat(String(format: "%.0f", session.fps), "fps")
+                stat(measured(session.latencyMs), "ms latency")
+                stat(measured(session.bitrateMbps), "Mb/s")
+            }
+            if !session.transport.isEmpty {
+                HStack(spacing: 14) {
+                    Text(session.transport).font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .padding(.horizontal, 5).padding(.vertical, 2).background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 4))
+                        .accessibilityLabel("Video transport: \(session.transport)")
+                    stat(measured(session.roundTripMs), "ms RTT")
+                    stat("\(session.droppedFrames)", "dropped")
+                }
+            }
+        }.foregroundStyle(.white).padding(.horizontal, 13).padding(.vertical, 9)
+            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
             .accessibilityElement(children: .combine)
     }
+    private func measured(_ value: Double) -> String { value > 0 ? String(format: "%.1f", value) : "—" }
     private func stat(_ value: String, _ unit: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 3) {
             Text(value).font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(.white)

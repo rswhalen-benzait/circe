@@ -93,6 +93,9 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var fps: Double = 0
     @Published public var latencyMs: Double = 0
     @Published public var bitrateMbps: Double = 0
+    @Published public var roundTripMs: Double = 0
+    @Published public var transport = ""
+    @Published public var droppedFrames = 0
     @Published public var scale: DisplayScale = .fit
     @Published public var matchesWindowResolution = false
     @Published public var resolutionMatchingAvailable = false

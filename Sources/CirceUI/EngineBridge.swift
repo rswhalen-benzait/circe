@@ -264,6 +264,7 @@ private final class NativeSessionBinding {
         engine.$hostName.sink { [weak presentation] in presentation?.name = $0 }.store(in: &observations)
         engine.$stats.sink { [weak presentation] stats in
             presentation?.fps = stats.fps; presentation?.latencyMs = stats.latencyMs; presentation?.bitrateMbps = stats.bitrateMbps
+            presentation?.roundTripMs = stats.roundTripMs; presentation?.transport = stats.transport; presentation?.droppedFrames = stats.droppedFrames
         }.store(in: &observations)
         engine.$displays.sink { [weak presentation] displays in
             presentation?.displays = displays.map { RemoteDisplay(id: $0.displayID, name: $0.name) }
@@ -303,6 +304,7 @@ private final class VNCSessionBinding {
         }.store(in: &observations)
         engine.$stats.sink { [weak presentation] stats in
             presentation?.fps = stats.fps; presentation?.latencyMs = stats.latencyMs; presentation?.bitrateMbps = stats.bitrateMbps
+            presentation?.roundTripMs = stats.roundTripMs; presentation?.transport = stats.transport; presentation?.droppedFrames = stats.droppedFrames
             let size = stats.resolution.split(separator: "×").compactMap { Double($0) }
             if size.count == 2, size[0] > 0, size[1] > 0 { presentation?.remotePixelSize = CGSize(width: size[0], height: size[1]) }
         }.store(in: &observations)

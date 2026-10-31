@@ -54,6 +54,10 @@ struct PreviewExporter {
         try save("session-accessibility", SessionView(session: live).frame(width: 800, height: 520))
         live.phase = .streaming; live.showAccessibilityHint = false; live.isDraggingFiles = true
         try save("session-drop", SessionView(session: live).frame(width: 800, height: 520))
+        live.phase = .streaming; live.isDraggingFiles = false; live.showStats = true
+        live.fps = 60; live.latencyMs = 4.8; live.bitrateMbps = 42.4; live.roundTripMs = 1.2
+        live.transport = "UDP"; live.droppedFrames = 12
+        try save("session-stats", SessionView(session: live).frame(width: 800, height: 520))
         session.phase = .disconnected("The remote Mac stopped responding. Check that it is awake and connected to the network.")
         try save("disconnected", SessionView(session: session).frame(width: 800, height: 520))
         print("Rendered UI previews in \(output.path)")
