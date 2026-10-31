@@ -35,6 +35,9 @@ final class VideoRenderer {
         awaitingKeyframe = true
     }
 
+    /// Keep showing the last good image, but don't decode until the next keyframe (after loss).
+    func awaitKeyframe() { awaitingKeyframe = true }
+
     func display(_ frame: VideoFrame) {
         if frame.isKeyframe, !frame.parameterSets.isEmpty {
             format = makeFormat(frame.parameterSets)

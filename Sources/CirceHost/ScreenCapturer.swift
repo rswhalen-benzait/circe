@@ -131,6 +131,7 @@ enum NSScreenList {
 /// Generates animated frames without ScreenCaptureKit — exercises encode → network → decode
 /// in tests and on machines without Screen Recording permission.
 final class SyntheticCapturer: @unchecked Sendable {
+    static let noisy = ProcessInfo.processInfo.environment["CIRCE_SYNTHETIC_NOISE"] == "1"
     private var timer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "circe.capture.synthetic", qos: .userInteractive)
     private var pool: CVPixelBufferPool?
@@ -172,6 +173,17 @@ final class SyntheticCapturer: @unchecked Sendable {
             let line = y + row * stride
             memset(line, Int32(16 + (row / 6) % 200), w)
             memset(line + bar, 235, min(40, w - bar))
+        }
+        if Self.noisy {
+            // Stress mode: a changing high-entropy band makes every frame large (many datagrams).
+            var seed = UInt64(tick) &* 6364136223846793005
+            for row in 0..<min(h, 360) {
+                let line = y + row * stride
+                for col in Swift.stride(from: 0, to: w, by: 8) {
+                    seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                    line[col] = UInt8(truncatingIfNeeded: seed >> 56)
+                }
+            }
         }
         let uvStride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1)
         let uv = CVPixelBufferGetBaseAddressOfPlane(pb, 1)!.assumingMemoryBound(to: UInt8.self)

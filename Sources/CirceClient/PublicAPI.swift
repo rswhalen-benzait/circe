@@ -24,6 +24,10 @@ public struct SessionStats: Equatable, Sendable {
     public var roundTripMs: Double = 0
     public var codec: String = ""
     public var resolution: String = ""
+    /// "UDP" (low-latency path with FEC) or "TCP".
+    public var transport: String = ""
+    /// Frames that couldn't be recovered (shown as a brief freeze until the next keyframe).
+    public var droppedFrames: Int = 0
     public init() {}
 }
 
@@ -237,6 +241,8 @@ public final class ClientSession: ObservableObject, Identifiable {
                 self.stats.bitrateMbps = s.bitrateMbps
                 self.stats.latencyMs = s.latencyMs
                 self.stats.roundTripMs = s.rttMs
+                self.stats.transport = s.transport
+                self.stats.droppedFrames = s.dropped
             }
         }
     }
@@ -271,7 +277,20 @@ private final class Link: @unchecked Sendable {
     private var pingID: UInt32 = 0
     private var lastKeyframeRequest: UInt64 = 0
 
-    struct Snapshot { var fps: Double; var bitrateMbps: Double; var latencyMs: Double; var rttMs: Double }
+    // UDP video path
+    private var udp: NWConnection?
+    private var udpSend: DatagramCipher?
+    private var udpReceive: DatagramCipher?
+    private var udpSessionID = Data()
+    private var udpReady = false
+    private var reassembler = FrameReassembler()
+    private var lastFrameNumber: UInt32?
+    private var framesReceived: UInt32 = 0
+    private var framesLost: UInt32 = 0
+    private var transportName = "TCP"
+    private var totalDropped = 0
+
+    struct Snapshot { var fps: Double; var bitrateMbps: Double; var latencyMs: Double; var rttMs: Double; var transport: String; var dropped: Int }
 
     init(endpoint: NWEndpoint, identity: DeviceIdentity, trust: TrustStore, renderer: VideoRenderer) {
         self.endpoint = endpoint
@@ -297,6 +316,8 @@ private final class Link: @unchecked Sendable {
             goodbyeReason = nil
             serverHello = nil
             clockOffset = nil
+            lastFrameNumber = nil
+            closeUDP()
             ephemeral = Curve25519.KeyAgreement.PrivateKey()
             let c = FramedConnection(connection: NWConnection(to: endpoint, using: FramedConnection.parameters()), queue: queue)
             conn = c
@@ -320,6 +341,7 @@ private final class Link: @unchecked Sendable {
             conn?.onClose = nil
             conn?.close(goodbye: reason)
             conn = nil
+            closeUDP()
             stopAudio()
             renderer.flush()
         }
@@ -373,13 +395,18 @@ private final class Link: @unchecked Sendable {
             guard serverHello != nil else { return }
             pingID &+= 1
             conn?.send(.ping(id: pingID, sentMicros: Clock.micros()))
+            if pingID % 2 == 0 {
+                conn?.send(.videoFeedback(received: framesReceived, lost: framesLost))
+                framesReceived = 0
+                framesLost = 0
+            }
         }
     }
 
     func snapshot() -> Snapshot {
         queue.sync {
             Snapshot(fps: fpsMeter.rate(), bitrateMbps: bytesMeter.rate() * 8 / 1_000_000,
-                     latencyMs: latencyEMA, rttMs: rttEMA)
+                     latencyMs: latencyEMA, rttMs: rttEMA, transport: transportName, dropped: totalDropped)
         }
     }
 
@@ -414,13 +441,12 @@ private final class Link: @unchecked Sendable {
             }
             main { $0.linkStreamStart(s) }
         case .video(let f):
-            fpsMeter.add()
-            bytesMeter.add(Double(f.data.count))
-            if let off = clockOffset {
-                let lat = (Double(Clock.micros()) + off - Double(f.captureMicros)) / 1000
-                if lat > -50 && lat < 5000 { latencyEMA = latencyEMA == 0 ? lat : latencyEMA * 0.9 + lat * 0.1 }
-            }
-            renderer.display(f)
+            video(f)
+        case let .udpOffer(sid, port):
+            openUDP(sessionID: sid, port: port)
+        case .udpReady:
+            udpReady = true
+            transportName = "UDP"
         case .audio(let a):
             bytesMeter.add(Double(a.data.count))
             audio?.enqueue(a)
@@ -444,6 +470,84 @@ private final class Link: @unchecked Sendable {
         }
     }
 
+    private func video(_ f: VideoFrame) {
+        framesReceived &+= 1
+        // Frame numbers are contiguous; a gap means the decoder lost a reference.
+        if let last = lastFrameNumber, f.frameNumber != last &+ 1, !f.isKeyframe {
+            renderer.awaitKeyframe()
+            requestKeyframeThrottled()
+        }
+        lastFrameNumber = f.frameNumber
+        fpsMeter.add()
+        bytesMeter.add(Double(f.data.count))
+        if let off = clockOffset {
+            let lat = (Double(Clock.micros()) + off - Double(f.captureMicros)) / 1000
+            if lat > -50 && lat < 5000 { latencyEMA = latencyEMA == 0 ? lat : latencyEMA * 0.9 + lat * 0.1 }
+        }
+        renderer.display(f)
+    }
+
+    // MARK: UDP
+
+    /// Test hook: drop this fraction of incoming video datagrams.
+    static let simulatedLoss = Double(ProcessInfo.processInfo.environment["CIRCE_SIMULATE_LOSS"] ?? "") ?? 0
+    static let udpDisabled = ProcessInfo.processInfo.environment["CIRCE_DISABLE_UDP"] == "1"
+
+    private func openUDP(sessionID: Data, port: UInt16) {
+        guard !Self.udpDisabled, udp == nil,
+              case let .hostPort(host, _)? = conn?.connection.currentPath?.remoteEndpoint,
+              let p = NWEndpoint.Port(rawValue: port) else { return }
+        udpSessionID = sessionID
+        let c = NWConnection(host: host, port: p, using: .circeUDP())
+        udp = c
+        c.start(queue: queue)
+        receiveUDP(c)
+        sendHello(attempt: 0)
+    }
+
+    private func sendHello(attempt: Int) {
+        guard let udp, var tx = udpSend else { return }
+        udp.send(content: UDPHello.make(sessionID: udpSessionID, cipher: &tx), completion: .idempotent)
+        udpSend = tx
+        // Fast retries until the host confirms, then a keepalive every second for NAT/Wi-Fi state.
+        let delay = udpReady ? 1.0 : 0.1
+        guard udpReady || attempt < 30 else { return } // ~3 s without confirmation: stay on TCP
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.udp === udp else { return }
+            self.sendHello(attempt: attempt + 1)
+        }
+    }
+
+    private func receiveUDP(_ c: NWConnection) {
+        c.receiveMessage { [weak self] data, _, _, error in
+            guard let self, self.udp === c else { return }
+            if let data, Self.simulatedLoss == 0 || Double.random(in: 0..<1) >= Self.simulatedLoss,
+               var rx = self.udpReceive, let plain = rx.open(data) {
+                self.udpReceive = rx
+                let (frames, lost) = self.reassembler.add(plain)
+                if lost {
+                    self.framesLost &+= 1
+                    self.totalDropped += 1
+                    self.renderer.awaitKeyframe()
+                    self.requestKeyframeThrottled()
+                }
+                for (_, payload) in frames {
+                    var r = ByteReader(payload)
+                    if let f = try? VideoFrame.decode(&r) { self.video(f) }
+                }
+            }
+            if error == nil { self.receiveUDP(c) }
+        }
+    }
+
+    private func closeUDP() {
+        udp?.cancel()
+        udp = nil
+        udpReady = false
+        reassembler = FrameReassembler()
+        transportName = "TCP"
+    }
+
     private func handleServerHello(_ sh: ServerHello) {
         guard let hello, sh.version == circeProtocolVersion else {
             deliberateClose = true
@@ -461,6 +565,7 @@ private final class Link: @unchecked Sendable {
                                               remoteStatic: sh.staticKey, remoteEphemeral: sh.ephemeralKey,
                                               transcript: transcript)
             conn?.channel = SecureChannel(keys: keys)
+            (udpSend, udpReceive) = DatagramCipher.keys(from: keys, isClient: true)
         } catch {
             deliberateClose = true
             goodbyeReason = "Secure handshake failed."
@@ -480,6 +585,7 @@ private final class Link: @unchecked Sendable {
 
     private func closed(_ error: Error?) {
         conn = nil
+        closeUDP()
         stopAudio()
         let deliberate = deliberateClose
         let reason = goodbyeReason ?? error.map(Self.describe)

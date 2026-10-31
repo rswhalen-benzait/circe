@@ -12,6 +12,12 @@ final class HostPolicy: @unchecked Sendable {
     let trust: TrustStore
     let allowUnauthenticated: Bool
     var syntheticCapture = false
+    /// UDP port for the low-latency video path (nil = TCP only).
+    var udpPort: UInt16? {
+        get { lock.withLock { _udpPort } }
+        set { lock.withLock { _udpPort = newValue } }
+    }
+    private var _udpPort: UInt16?
     private let lock = NSLock()
     private var _pin: String?
     private var _allowPassword = true
@@ -38,6 +44,7 @@ final class HostSession: @unchecked Sendable {
     enum Phase { case hello, auth, streaming, closed }
 
     let id = UUID()
+    let sessionID: Data = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
     let queue: DispatchQueue
     private let conn: FramedConnection
     private let policy: HostPolicy
@@ -46,6 +53,17 @@ final class HostSession: @unchecked Sendable {
     private(set) var peerName = "Unknown"
     private(set) var peerID = ""
     private var peerStatic = Data()
+
+    // Low-latency UDP video path (optional; TCP is the fallback).
+    private var udp: NWConnection?
+    private var udpSend: DatagramCipher?
+    private var udpReceive: DatagramCipher?
+    private var udpOffered = false
+    private var reportedLoss = 0
+    private var reportedFrames = 0
+    /// Adaptive FEC: data shards per parity shard (8 = 12.5% overhead … 2 = 50%).
+    private var fecGroup = VideoDatagrams.groupSize
+    private var lossFreeSeconds = 0
 
     private var capturer: ScreenCapturer?
     private var encoder: VideoEncoder?
@@ -130,6 +148,8 @@ final class HostSession: @unchecked Sendable {
             files.chunk(id: id, data: data)
         case let (.streaming, .fileEnd(id, cancelled)):
             files.end(id: id, cancelled: cancelled)
+        case let (.streaming, .videoFeedback(received, lost)):
+            pipeLock.withLock { reportedLoss += Int(lost); reportedFrames += Int(received) + Int(lost) }
         case (_, .ping(let id, let t)):
             conn.send(.pong(id: id, sentMicros: t, peerMicros: Clock.micros()))
         case (_, .goodbye(let g)):
@@ -164,6 +184,7 @@ final class HostSession: @unchecked Sendable {
                                               remoteEphemeral: hello.ephemeralKey, transcript: transcript)
             conn.send(.serverHello(sh))
             conn.channel = SecureChannel(keys: keys)
+            (udpSend, udpReceive) = DatagramCipher.keys(from: keys, isClient: false)
             phase = .auth
             if !trusted && !policy.allowUnauthenticated { onNeedsPIN?(true) }
             onStateChange?(self)
@@ -287,16 +308,14 @@ final class HostSession: @unchecked Sendable {
         }
         self.encoder = encoder
         self.synthetic = synth
-        encoder.onFrame = { [weak self] frame in
-            guard let self else { return }
-            self.queue.async { self.conn.send(.video(frame)) { [weak self] _ in self?.frameSent() } }
-        }
+        encoder.onFrame = { [weak self] frame in self?.queue.async { self?.sendVideo(frame) } }
         synth.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
         conn.send(.streamStart(StreamStart(codec: encoder.codec, display: d, displays: [d],
                                            encodedWidth: d.pixelWidth, encodedHeight: d.pixelHeight, audio: nil,
                                            hostClockMicros: Clock.micros())))
         startAdaptiveBitrate(defaultBitrate(width: d.pixelWidth, height: d.pixelHeight, fps: fps, quality: config.quality))
         synth.start(fps: fps)
+        offerUDP()
         onStreamingStarted?(self)
     }
 
@@ -321,12 +340,7 @@ final class HostSession: @unchecked Sendable {
         self.encoder = encoder
         injector?.setDisplay(display.displayID)
 
-        encoder.onFrame = { [weak self] frame in
-            guard let self else { return }
-            self.queue.async {
-                self.conn.send(.video(frame)) { [weak self] _ in self?.frameSent() }
-            }
-        }
+        encoder.onFrame = { [weak self] frame in self?.queue.async { self?.sendVideo(frame) } }
         capturer.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
         let audio = AudioPacketizer()
         capturer.onAudio = { [weak self] sb in
@@ -346,7 +360,60 @@ final class HostSession: @unchecked Sendable {
                                            encodedWidth: w, encodedHeight: h,
                                            audio: config.audioEnabled ? audio.format : nil,
                                            hostClockMicros: Clock.micros())))
+        offerUDP()
         onStreamingStarted?(self)
+    }
+
+    // MARK: UDP video
+
+    private func offerUDP() {
+        guard !udpOffered, let port = policy.udpPort else { return }
+        udpOffered = true
+        conn.send(.udpOffer(sessionID: sessionID, port: port))
+    }
+
+    /// Called by HostService (any queue) when a datagram flow presents our session ID.
+    func attachUDP(_ c: NWConnection, firstDatagram: Data) {
+        queue.async { [self] in
+            guard phase == .streaming, var rx = udpReceive, UDPHello.verify(firstDatagram, cipher: &rx) else { c.cancel(); return }
+            udpReceive = rx
+            if udp == nil {
+                udp = c
+                conn.send(.udpReady)
+                refreshKeyframe()
+            } else if udp !== c {
+                // Client's address changed (e.g. Wi-Fi roam): follow it.
+                udp?.cancel()
+                udp = c
+            }
+            receiveUDP(c)
+        }
+    }
+
+    private func receiveUDP(_ c: NWConnection) {
+        c.receiveMessage { [weak self] data, _, _, error in
+            guard let self, error == nil else { return }
+            self.queue.async {
+                if let data, var rx = self.udpReceive, UDPHello.verify(data, cipher: &rx) { self.udpReceive = rx }
+                if self.udp === c { self.receiveUDP(c) }
+            }
+        }
+    }
+
+    private func sendVideo(_ frame: VideoFrame) {
+        guard phase == .streaming else { return }
+        if let udp, var tx = udpSend {
+            var w = ByteWriter(capacity: frame.data.count + 64)
+            frame.encode(into: &w)
+            let shards = VideoDatagrams.packetize(frameNumber: frame.frameNumber, payload: w.data, groupSize: fecGroup)
+            udp.batch {
+                for shard in shards { udp.send(content: tx.seal(shard), completion: .idempotent) }
+            }
+            udpSend = tx
+            frameSent()
+        } else {
+            conn.send(.video(frame)) { [weak self] _ in self?.frameSent() }
+        }
     }
 
     private func startAdaptiveBitrate(_ bitrate: Int) {
@@ -364,9 +431,21 @@ final class HostSession: @unchecked Sendable {
 
     private func adaptBitrate() {
         guard let encoder else { return }
-        let skipped = pipeLock.withLock { () -> Int in let s = skippedFrames; skippedFrames = 0; return s }
+        let (skipped, lost, frames) = pipeLock.withLock { () -> (Int, Int, Int) in
+            defer { skippedFrames = 0; reportedLoss = 0; reportedFrames = 0 }
+            return (skippedFrames, reportedLoss, reportedFrames)
+        }
+        let lossRate = frames > 0 ? Double(lost) / Double(frames) : 0
+        // Random (Wi-Fi) loss is answered with more parity first; only heavy loss means congestion.
+        if lost > 0 {
+            lossFreeSeconds = 0
+            fecGroup = lossRate > 0.04 ? 2 : lossRate > 0.01 ? 3 : 4
+        } else {
+            lossFreeSeconds += 1
+            if lossFreeSeconds >= 5 && fecGroup < VideoDatagrams.groupSize { fecGroup = min(VideoDatagrams.groupSize, fecGroup * 2) }
+        }
         var next = currentBitrate
-        if skipped > 2 {
+        if skipped > 2 || lossRate > 0.10 {
             next = max(2_000_000, Int(Double(currentBitrate) * 0.7))
             cleanSeconds = 0
         } else {
@@ -455,6 +534,8 @@ final class HostSession: @unchecked Sendable {
         let wasAuth = phase == .auth
         phase = .closed
         stopPipeline()
+        udp?.cancel()
+        udp = nil
         modeMatcher.restore()
         files.cancelAll()
         releasePowerAssertion()

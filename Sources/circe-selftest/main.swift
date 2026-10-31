@@ -164,6 +164,57 @@ struct AudioTests {
     }
 }
 
+struct DatagramTests {
+    func frame(_ n: Int) -> Data { Data((0..<n).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) }) }
+
+    func testRoundTripNoLoss() {
+        for size in [1, 100, 1_150, 1_151, 9_200, 250_000] {
+            let payload = frame(size)
+            let r = FrameReassembler()
+            var got: Data?
+            for d in VideoDatagrams.packetize(frameNumber: 5, payload: payload).shuffled() {
+                if let f = r.add(d).frames.first { got = f.1 }
+            }
+            expect(got == payload)
+        }
+    }
+
+    func testRepairsOneLossPerGroup() {
+        let payload = frame(40_000)
+        var shards = VideoDatagrams.packetize(frameNumber: 9, payload: payload)
+        // Drop one data shard from every group of 8.
+        for g in stride(from: 0, to: 35, by: 8).reversed() { shards.remove(at: g + 1) }
+        let r = FrameReassembler()
+        var got: Data?
+        for d in shards { if let f = r.add(d).frames.first { got = f.1 } }
+        expect(got == payload)
+        expect(r.framesRepaired == 1)
+    }
+
+    func testUnrecoverableLossIsReported() {
+        let r = FrameReassembler()
+        var shards = VideoDatagrams.packetize(frameNumber: 1, payload: frame(20_000))
+        shards.removeFirst(2) // two from the same group: parity can't fix it
+        for d in shards { expect(r.add(d).frames.isEmpty) }
+        var lost = false
+        for d in VideoDatagrams.packetize(frameNumber: 2, payload: frame(3_000)) { lost = r.add(d).lost || lost }
+        expect(lost)
+        expect(r.framesLost == 1)
+    }
+
+    func testCipherRoundTripAndReplay() {
+        let k = SymmetricKey(size: .bits256)
+        var tx = DatagramCipher(key: k), rx = DatagramCipher(key: k)
+        let a = tx.seal(Data("a".utf8)), b = tx.seal(Data("b".utf8)), c = tx.seal(Data("c".utf8))
+        expect(rx.open(c) == Data("c".utf8))      // out of order is fine
+        expect(rx.open(a) == Data("a".utf8))
+        expect(rx.open(a) == nil)                 // replay rejected
+        expect(rx.open(b) == Data("b".utf8))
+        var bad = tx.seal(Data("x".utf8)); bad[10] ^= 1
+        expect(rx.open(bad) == nil)               // tamper rejected
+    }
+}
+
 // Minimal test harness (this toolchain ships without XCTest / Swift Testing macros).
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var current = ""
@@ -202,5 +253,9 @@ run("CryptoTests.testPINFormat") { CryptoTests().testPINFormat() }
 run("AddressTests.testParsing") { AddressTests().testParsing() }
 run("BigIntTests.testMontgomeryMatchesPython") { BigIntTests().testMontgomeryMatchesPython() }
 run("AudioTests.testOpusRoundTrip") { AudioTests().testOpusRoundTrip() }
+run("DatagramTests.testRoundTripNoLoss") { DatagramTests().testRoundTripNoLoss() }
+run("DatagramTests.testRepairsOneLossPerGroup") { DatagramTests().testRepairsOneLossPerGroup() }
+run("DatagramTests.testUnrecoverableLossIsReported") { DatagramTests().testUnrecoverableLossIsReported() }
+run("DatagramTests.testCipherRoundTripAndReplay") { DatagramTests().testCipherRoundTripAndReplay() }
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) failure(s).")
 exit(failures == 0 ? 0 : 1)

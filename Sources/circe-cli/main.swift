@@ -99,8 +99,8 @@ func runConnect() {
                 let s = session.stats
                 maxFPS = max(maxFPS, s.fps)
                 if Date().timeIntervalSince(start) >= seconds {
-                    log(String(format: "RESULT codec=%@ res=%@ fps=%.0f (max %.0f) bitrate=%.1fMbps latency=%.1fms rtt=%.1fms",
-                               s.codec, s.resolution, s.fps, maxFPS, s.bitrateMbps, s.latencyMs, s.roundTripMs))
+                    log(String(format: "RESULT transport=%@ codec=%@ res=%@ fps=%.0f (max %.0f) bitrate=%.1fMbps latency=%.1fms rtt=%.1fms dropped=%d",
+                               s.transport, s.codec, s.resolution, s.fps, maxFPS, s.bitrateMbps, s.latencyMs, s.roundTripMs, s.droppedFrames))
                     session.disconnect()
                     exit(maxFPS > 0 ? 0 : 5)
                 }

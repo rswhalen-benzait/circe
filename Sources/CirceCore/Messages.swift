@@ -284,6 +284,12 @@ public enum Message: Sendable {
     case fileBegin(id: UInt32, name: String, size: UInt64)
     case fileChunk(id: UInt32, data: Data)
     case fileEnd(id: UInt32, cancelled: Bool)
+    /// Host offers a low-latency UDP video path; client proves ownership with an encrypted hello datagram.
+    case udpOffer(sessionID: Data, port: UInt16)
+    /// Host received the client's hello: video now flows over UDP.
+    case udpReady
+    /// Client -> host once a second: frames received / lost (drives adaptive bitrate on UDP).
+    case videoFeedback(received: UInt32, lost: UInt32)
 
     enum Kind: UInt8 {
         case clientHello = 1, serverHello, auth, authResult, streamStart, configure
@@ -293,6 +299,7 @@ public enum Message: Sendable {
         case clipboard = 0x40
         case ping = 0x50, pong
         case fileBegin = 0x60, fileChunk, fileEnd
+        case udpOffer = 0x70, udpReady, videoFeedback
         case goodbye = 0x7F
     }
 
@@ -334,6 +341,9 @@ public enum Message: Sendable {
             w = ByteWriter(capacity: data.count + 16)
             w.u8(Kind.fileChunk.rawValue); w.u32(id); w.blob(data)
         case let .fileEnd(id, cancelled): w.u8(Kind.fileEnd.rawValue); w.u32(id); w.bool(cancelled)
+        case let .udpOffer(sid, port): w.u8(Kind.udpOffer.rawValue); w.blob(sid); w.u16(port)
+        case .udpReady: w.u8(Kind.udpReady.rawValue)
+        case let .videoFeedback(rx, lost): w.u8(Kind.videoFeedback.rawValue); w.u32(rx); w.u32(lost)
         }
         return w.data
     }
@@ -372,6 +382,9 @@ public enum Message: Sendable {
         case .fileBegin: return .fileBegin(id: try r.u32(), name: try r.string(), size: try r.u64())
         case .fileChunk: return .fileChunk(id: try r.u32(), data: try r.blob())
         case .fileEnd: return .fileEnd(id: try r.u32(), cancelled: try r.bool())
+        case .udpOffer: return .udpOffer(sessionID: try r.blob(), port: try r.u16())
+        case .udpReady: return .udpReady
+        case .videoFeedback: return .videoFeedback(received: try r.u32(), lost: try r.u32())
         }
     }
 }

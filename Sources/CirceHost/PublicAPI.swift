@@ -35,6 +35,7 @@ public final class HostService: ObservableObject {
     private let preferredPort: UInt16
     private let serviceName: String?
     private var listener: NWListener?
+    private var udpListener: NWListener?
     private var sessions: [UUID: HostSession] = [:]
     private var connectedAt: [UUID: Date] = [:]
     private var pinRequests = Set<UUID>()
@@ -89,6 +90,9 @@ public final class HostService: ObservableObject {
     public func stop() {
         listener?.cancel()
         listener = nil
+        udpListener?.cancel()
+        udpListener = nil
+        policy.udpPort = nil
         for s in sessions.values { s.close(reason: "This Mac stopped sharing") }
         isRunning = false
         port = nil
@@ -107,6 +111,7 @@ public final class HostService: ObservableObject {
         case .ready:
             isRunning = true
             port = listener?.port?.rawValue
+            startUDP()
         case .failed(let e):
             lastError = "Sharing failed: \(e.localizedDescription)"
             listener?.cancel()
@@ -116,6 +121,33 @@ public final class HostService: ObservableObject {
             isRunning = false
         default: break
         }
+    }
+
+    /// UDP on the same port number carries video when the network allows it (TCP remains the fallback).
+    private func startUDP() {
+        guard udpListener == nil, let p = listener?.port,
+              let l = try? NWListener(using: .circeUDP(), on: p) else { return }
+        l.newConnectionHandler = { [weak self] c in
+            c.start(queue: DispatchQueue(label: "circe.host.udp"))
+            c.receiveMessage { data, _, _, _ in
+                guard let data, let sid = UDPHello.sessionID(of: data) else { c.cancel(); return }
+                Task { @MainActor in
+                    guard let s = self?.sessions.values.first(where: { $0.sessionID == sid }) else { c.cancel(); return }
+                    s.attachUDP(c, firstDatagram: data)
+                }
+            }
+        }
+        l.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                switch state {
+                case .ready: self?.policy.udpPort = p.rawValue
+                case .failed, .cancelled: self?.policy.udpPort = nil
+                default: break
+                }
+            }
+        }
+        l.start(queue: listenerQueue)
+        udpListener = l
     }
 
     private func accept(_ c: NWConnection) {
