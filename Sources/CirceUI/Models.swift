@@ -86,7 +86,10 @@ public final class RemoteSession: ObservableObject, Identifiable {
     public let id = UUID()
     @Published public var name: String
     public let address: String
-    @Published public var phase: ConnectionPhase = .connecting
+    @Published public var phase: ConnectionPhase = .connecting {
+        didSet { if phase != .streaming { isDraggingFiles = false } }
+    }
+    @Published public var isDraggingFiles = false
     @Published public var fps: Double = 0
     @Published public var latencyMs: Double = 0
     @Published public var bitrateMbps: Double = 0

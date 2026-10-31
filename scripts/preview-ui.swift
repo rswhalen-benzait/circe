@@ -48,6 +48,12 @@ struct PreviewExporter {
         let session = RemoteSession(name: "Studio Mac", address: "studio.local")
         session.phase = .pairing
         try save("pairing", PairingView(session: session).frame(width: 680, height: 520))
+        let live = RemoteSession(name: "Studio Mac", address: "studio.local")
+        live.remotePixelSize = .zero // Keep the fixed preview window size rather than sizing it to a remote display.
+        live.phase = .streaming; live.showAccessibilityHint = true
+        try save("session-accessibility", SessionView(session: live).frame(width: 800, height: 520))
+        live.phase = .streaming; live.showAccessibilityHint = false; live.isDraggingFiles = true
+        try save("session-drop", SessionView(session: live).frame(width: 800, height: 520))
         session.phase = .disconnected("The remote Mac stopped responding. Check that it is awake and connected to the network.")
         try save("disconnected", SessionView(session: session).frame(width: 800, height: 520))
         print("Rendered UI previews in \(output.path)")

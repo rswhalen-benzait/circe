@@ -31,6 +31,10 @@ import Foundation
         precondition(session.scale == .fit && session.matchesWindowResolution)
         session.setScale(.actual)
         precondition(!session.matchesWindowResolution)
+        session.phase = .streaming
+        session.isDraggingFiles = true
+        session.phase = .reconnecting(1)
+        precondition(!session.isDraggingFiles, "A lost connection must clear the drop affordance")
         let history = RecentConnectionsStore(defaults: defaults)
         history.record(host: nil, address: "vnc://user:secret@host", name: "Invalid")
         precondition(history.connections.isEmpty, "History must never store credential-bearing input")

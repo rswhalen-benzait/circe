@@ -20,6 +20,9 @@ public struct SessionView: View {
             case .streaming, .reconnecting:
                 SessionSurface(session: session)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if session.isDraggingFiles {
+                    FileDropAffordance(hostName: session.name).transition(.opacity)
+                }
                 if case .reconnecting(let attempt) = session.phase {
                     HStack(spacing: 9) {
                         ProgressView().controlSize(.small)
@@ -40,6 +43,7 @@ public struct SessionView: View {
             case .disconnected(let reason): if let reason { disconnected(reason) } else { Color.clear }
             }
         }.frame(minWidth: 400, minHeight: 320).ignoresSafeArea()
+            .animation(.easeOut(duration: 0.15), value: session.isDraggingFiles)
             .background(WindowReader(onWindow: { if window !== $0 { window = $0; configureWindow() } }, onTopEdge: { revealToolbar() }, onReleaseKeyboard: {
                 guard session.keyboardReleaseAvailable else { return false }
                 session.releaseKeyboard(); revealToolbar(); return true
@@ -113,6 +117,7 @@ public struct SessionView: View {
                     .disabled(!session.resolutionMatchingAvailable)
                 Divider()
                 Toggle("Sync clipboard", isOn: Binding(get: { session.clipboardEnabled }, set: { session.setClipboard($0) })).disabled(!session.clipboardAvailable)
+                    .help("Local clipboard contents are sent only while this session is focused.")
                 Toggle("Play remote audio", isOn: Binding(get: { session.audioEnabled }, set: { session.setAudio($0) })).disabled(!session.audioAvailable)
                 Divider()
                 Picker("Quality", selection: Binding(get: { session.quality }, set: { session.setQuality($0) })) {

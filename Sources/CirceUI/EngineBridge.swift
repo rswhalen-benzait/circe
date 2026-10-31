@@ -223,6 +223,10 @@ private final class NativeSessionBinding {
     init(engine: ClientSession, presentation: RemoteSession) {
         self.engine = engine; self.presentation = presentation
         presentation.displayView = engine.displayView
+        engine.displayView.onDragHover = { [weak presentation] hovering in
+            guard let presentation else { return }
+            presentation.isDraggingFiles = hovering && presentation.phase == .streaming
+        }
         presentation.controlsAvailable = true
         presentation.scaleAvailable = true
         presentation.clipboardAvailable = true
