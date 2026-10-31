@@ -57,6 +57,7 @@ public enum StreamQuality: String, CaseIterable, Identifiable {
 @MainActor
 public final class CircePreferences: ObservableObject {
     public static let sharingKey = "shareThisMac"
+    @Published public fileprivate(set) var hasSeenWelcome: Bool { didSet { defaults.set(hasSeenWelcome, forKey: "hasSeenWelcome") } }
     @Published public var accessibilityHintShown: Bool { didSet { defaults.set(accessibilityHintShown, forKey: "accessibilityHintShown") } }
     @Published public var shareThisMac: Bool { didSet { defaults.set(shareThisMac, forKey: Self.sharingKey) } }
     @Published public var clipboard: Bool { didSet { defaults.set(clipboard, forKey: "clipboard") } }
@@ -70,6 +71,7 @@ public final class CircePreferences: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: ["clipboard": true, "audio": true, "captureShortcuts": true, "showStats": false])
+        hasSeenWelcome = defaults.bool(forKey: "hasSeenWelcome")
         accessibilityHintShown = defaults.bool(forKey: "accessibilityHintShown")
         shareThisMac = defaults.bool(forKey: Self.sharingKey)
         clipboard = defaults.bool(forKey: "clipboard")
@@ -214,6 +216,13 @@ public final class CirceModel: ObservableObject {
     public func connect(to recent: RecentConnection) -> RemoteSession { begin(host: recent.nearbyHost, address: recent.address) }
     public func removeRecent(_ id: String) { recentStore.remove(id); recentConnections = recentStore.connections }
     public func clearRecents() { recentStore.clear(); recentConnections = [] }
+    /// Claim before presentation so another launcher, dismissal, or relaunch cannot show it again.
+    /// Background login leaves it unclaimed for the first deliberate visit to the launcher.
+    public func claimWelcomePresentation(quietLaunch: Bool) -> Bool {
+        guard !quietLaunch, !preferences.hasSeenWelcome else { return false }
+        preferences.hasSeenWelcome = true
+        return true
+    }
     private func begin(host: NearbyMac?, address: String) -> RemoteSession {
         let session = onConnect?(host, address) ?? RemoteSession(name: host?.name ?? address, address: address)
         if onConnect == nil { session.phase = .disconnected("The connection engine is not available in this preview.") }

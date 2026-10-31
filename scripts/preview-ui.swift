@@ -16,6 +16,7 @@ struct PreviewExporter {
             let suite = "com.circe.preview.\(UUID().uuidString)"
             let defaults = UserDefaults(suiteName: suite)!
             defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set(true, forKey: "hasSeenWelcome")
             let model = CirceModel(preferences: CircePreferences(defaults: defaults))
             func save<V: View>(_ name: String, _ view: V) throws {
                 let host = NSHostingView(rootView: view.environment(\.colorScheme, scheme))
@@ -31,6 +32,7 @@ struct PreviewExporter {
                 if let png = bitmap.representation(using: .png, properties: [:]) { try png.write(to: output.appendingPathComponent("\(name).png")) }
                 window.orderOut(nil)
             }
+            try save("welcome", WelcomeView { _ in })
             try save("launcher-empty", LauncherView(model: model).frame(width: 640, height: 650))
             model.hosts = [NearbyMac(id: "studio", name: "Studio Mac", model: "Mac Studio", address: "studio.local"), NearbyMac(id: "laptop", name: "Ralph’s MacBook Pro", model: "MacBookPro", address: "macbook.local")]
             try save("launcher", LauncherView(model: model).frame(width: 640, height: 650))

@@ -113,6 +113,11 @@ public enum CirceWindows {
         CirceStartup.revealLauncher()
         guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "circe.launcher" }) else { return false }
         window.deminiaturize(nil); window.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: .circeLauncherRevealed, object: window)
         return true
     }
+}
+
+public extension Notification.Name {
+    static let circeLauncherRevealed = Notification.Name("CirceLauncherRevealed")
 }

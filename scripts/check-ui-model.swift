@@ -43,6 +43,13 @@ import SwiftUI
         defer { defaults.removePersistentDomain(forName: suite) }
         let preferences = CircePreferences(defaults: defaults)
         let model = CirceModel(preferences: preferences)
+        precondition(!model.claimWelcomePresentation(quietLaunch: true), "Quiet login must not present onboarding")
+        precondition(!preferences.hasSeenWelcome, "Quiet login must preserve the first deliberate welcome")
+        precondition(model.claimWelcomePresentation(quietLaunch: false))
+        precondition(!model.claimWelcomePresentation(quietLaunch: false), "Only one launcher can claim the welcome")
+        let nextLaunch = CirceModel(preferences: CircePreferences(defaults: defaults))
+        precondition(!nextLaunch.claimWelcomePresentation(quietLaunch: false), "Welcome must stay dismissed across relaunch")
+        precondition(!preferences.shareThisMac, "Presenting or skipping welcome must not enable sharing")
         var sharingRequests: [Bool] = []
         var shutdowns = 0
         model.onHostToggle = { sharingRequests.append($0) }
@@ -124,6 +131,6 @@ import SwiftUI
         precondition(!CirceStartup.isQuietLaunch)
         CirceStartup.configure(sharingEnabled: true, event: login, arguments: [])
         precondition(CirceStartup.isQuietLaunch)
-        print("UI model checks passed: sharing persistence, quit semantics, login status, display matching, recent connections, and quiet launch policy.")
+        print("UI model checks passed: one-time welcome, sharing persistence, quit semantics, login status, display matching, recent connections, and quiet launch policy.")
     }
 }

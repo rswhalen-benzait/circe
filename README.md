@@ -80,6 +80,11 @@ Disk image packaging also requires Python 3.10+. It installs pinned packaging to
 Applications link, background, and icon positions. Use `CIRCE_PYTHON=/path/to/python3` to select
 Python, or `scripts/make-dmg.sh --skip-build` to package an existing release app.
 
+`scripts/check-ui-model.sh` checks preferences and light/dark color contrast.
+`scripts/check-onboarding.sh` briefly opens test windows to check first launch, relaunch, and
+quiet-login reopening with isolated preferences. `scripts/preview-ui.sh` renders both appearances
+into `build/previews/light` and `build/previews/dark`.
+
 End-to-end without Screen Recording permission, using generated frames:
 
 ```sh

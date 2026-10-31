@@ -1,12 +1,17 @@
 import SwiftUI
 
+private final class LauncherWindowReference { weak var window: NSWindow? }
+
 public struct LauncherView: View {
     @ObservedObject private var model: CirceModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @CirceViewState<String> private var address = ""
     @CirceViewState<String?> private var addressError = nil
-    @CirceViewState<Bool> private var showHost = false
+    private enum Sheet: String, Identifiable { case welcome, sharing; var id: Self { self } }
+    @CirceViewState<Sheet?> private var sheet = nil
+    @CirceViewState<Bool> private var shareAfterWelcome = false
+    @CirceViewState<LauncherWindowReference> private var windowReference = LauncherWindowReference()
     @FocusState private var addressFocused: Bool
     public init(model: CirceModel) { self.model = model }
 
@@ -27,11 +32,31 @@ public struct LauncherView: View {
         .background(CirceStyle.paper).foregroundStyle(CirceStyle.ink)
 
         .background(WindowReader(onWindow: { window in
+            windowReference.window = window
             window?.identifier = NSUserInterfaceItemIdentifier("circe.launcher")
             if CirceStartup.isQuietLaunch { window?.orderOut(nil) }
+            else if window?.isVisible == true { presentWelcomeIfNeeded() }
         }))
-        .sheet(isPresented: $showHost) { HostingSetupView(model: model) }
+        .sheet(item: $sheet, onDismiss: {
+            if shareAfterWelcome { shareAfterWelcome = false; sheet = .sharing }
+        }) { item in
+            switch item {
+            case .welcome:
+                WelcomeView { destination in
+                    shareAfterWelcome = destination == .share
+                    sheet = nil
+                }
+            case .sharing: HostingSetupView(model: model)
+            }
+        }
         .onAppear { model.refreshPermissions() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)) { _ in presentWelcomeIfNeeded() }
+        .onReceive(NotificationCenter.default.publisher(for: .circeLauncherRevealed)) { notification in
+            if (notification.object as? NSWindow) === windowReference.window { presentWelcomeIfNeeded() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeMainNotification)) { notification in
+            if (notification.object as? NSWindow) === windowReference.window { presentWelcomeIfNeeded() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshPermissions() }
     }
 
@@ -158,7 +183,7 @@ public struct LauncherView: View {
             Text(model.isHosting ? "This Mac is available" : "This Mac is private")
                 .font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
             Spacer()
-            Button { showHost = true } label: {
+            Button { sheet = .sharing } label: {
                 HStack(spacing: 5) { Text(model.isHosting ? "Sharing settings" : "Share this Mac"); Image(systemName: "arrow.up.right").font(.system(size: 9)) }
             }.buttonStyle(QuietButtonStyle())
         }.padding(.horizontal, 32).padding(.vertical, 16)
@@ -166,6 +191,10 @@ public struct LauncherView: View {
     }
 
     private func connect(_ session: RemoteSession) { openWindow(value: session.id) }
+    private func presentWelcomeIfNeeded() {
+        guard sheet == nil, windowReference.window?.isVisible == true else { return }
+        if model.claimWelcomePresentation(quietLaunch: CirceStartup.isQuietLaunch) { sheet = .welcome }
+    }
     private func connectManually() {
         let value = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
