@@ -3,8 +3,14 @@ import Foundation
 
 /// Switches a host display to the mode that best matches the client's window, and restores it after.
 /// Uses session-scoped configuration so macOS reverts automatically if Circe quits unexpectedly.
-final class DisplayModeMatcher {
+/// Shared by all sessions on a host: the pre-Circe mode is saved once per display and restored only
+/// when the last session that changed it lets go.
+final class DisplayModeMatcher: @unchecked Sendable {
+    static let shared = DisplayModeMatcher()
+
+    private let lock = NSLock()
     private var original: [CGDirectDisplayID: CGDisplayMode] = [:]
+    private var owners: [CGDirectDisplayID: Set<UUID>] = [:]
 
     /// Picks the closest mode by point size, preferring HiDPI and the current refresh rate.
     static func bestMode(for display: CGDirectDisplayID, pointWidth: Double, pointHeight: Double) -> CGDisplayMode? {
@@ -26,16 +32,30 @@ final class DisplayModeMatcher {
     }
 
     @discardableResult
-    func match(display: CGDirectDisplayID, pointWidth: Double, pointHeight: Double) -> Bool {
-        guard let mode = Self.bestMode(for: display, pointWidth: pointWidth, pointHeight: pointHeight) else { return false }
-        if let cur = CGDisplayCopyDisplayMode(display), cur.ioDisplayModeID == mode.ioDisplayModeID { return false }
-        if original[display] == nil { original[display] = CGDisplayCopyDisplayMode(display) }
-        return apply(mode, to: display)
+    func match(owner: UUID, display: CGDirectDisplayID, pointWidth: Double, pointHeight: Double) -> Bool {
+        lock.withLock {
+            guard let mode = Self.bestMode(for: display, pointWidth: pointWidth, pointHeight: pointHeight) else { return false }
+            if original[display] == nil { original[display] = CGDisplayCopyDisplayMode(display) }
+            owners[display, default: []].insert(owner)
+            if let cur = CGDisplayCopyDisplayMode(display), cur.ioDisplayModeID == mode.ioDisplayModeID { return false }
+            return apply(mode, to: display)
+        }
     }
 
-    func restore() {
-        for (display, mode) in original { _ = apply(mode, to: display) }
-        original.removeAll()
+    /// Releases `owner`'s claim; restores the original mode of displays nobody else is still matching.
+    @discardableResult
+    func release(owner: UUID) -> Bool {
+        lock.withLock {
+            var changed = false
+            for display in Array(owners.keys) {
+                guard owners[display]?.remove(owner) != nil else { continue }
+                if owners[display]?.isEmpty ?? true {
+                    owners[display] = nil
+                    if let mode = original.removeValue(forKey: display) { changed = apply(mode, to: display) || changed }
+                }
+            }
+            return changed
+        }
     }
 
     private func apply(_ mode: CGDisplayMode, to display: CGDirectDisplayID) -> Bool {

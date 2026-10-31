@@ -202,6 +202,19 @@ struct DatagramTests {
         expect(r.framesLost == 1)
     }
 
+    func testMalformedShardsAreIgnored() {
+        let r = FrameReassembler()
+        let shards = VideoDatagrams.packetize(frameNumber: 3, payload: frame(2_000)) // 2 data + 1 parity
+        _ = r.add(shards[0])
+        var emptyParity = shards[2].prefix(16) // header only, no parity bytes
+        _ = r.add(Data(emptyParity))
+        emptyParity = Data()
+        expect(r.add(Data([1, 2, 3])).frames.isEmpty)
+        var lying = shards[1]; lying[13] = 0xFF // payload length field disagrees with the shard
+        expect(r.add(lying).frames.isEmpty)
+        expect(r.add(shards[1]).frames.first?.1 == frame(2_000))
+    }
+
     func testCipherRoundTripAndReplay() {
         let k = SymmetricKey(size: .bits256)
         var tx = DatagramCipher(key: k), rx = DatagramCipher(key: k)
@@ -256,6 +269,7 @@ run("AudioTests.testOpusRoundTrip") { AudioTests().testOpusRoundTrip() }
 run("DatagramTests.testRoundTripNoLoss") { DatagramTests().testRoundTripNoLoss() }
 run("DatagramTests.testRepairsOneLossPerGroup") { DatagramTests().testRepairsOneLossPerGroup() }
 run("DatagramTests.testUnrecoverableLossIsReported") { DatagramTests().testUnrecoverableLossIsReported() }
+run("DatagramTests.testMalformedShardsAreIgnored") { DatagramTests().testMalformedShardsAreIgnored() }
 run("DatagramTests.testCipherRoundTripAndReplay") { DatagramTests().testCipherRoundTripAndReplay() }
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) failure(s).")
 exit(failures == 0 ? 0 : 1)

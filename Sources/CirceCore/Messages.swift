@@ -288,6 +288,8 @@ public enum Message: Sendable {
     case udpOffer(sessionID: Data, port: UInt16)
     /// Host received the client's hello: video now flows over UDP.
     case udpReady
+    /// Either side: the UDP path failed; video continues over TCP.
+    case udpClosed
     /// Client -> host once a second: frames received / lost (drives adaptive bitrate on UDP).
     case videoFeedback(received: UInt32, lost: UInt32)
 
@@ -299,7 +301,7 @@ public enum Message: Sendable {
         case clipboard = 0x40
         case ping = 0x50, pong
         case fileBegin = 0x60, fileChunk, fileEnd
-        case udpOffer = 0x70, udpReady, videoFeedback
+        case udpOffer = 0x70, udpReady, videoFeedback, udpClosed
         case goodbye = 0x7F
     }
 
@@ -343,6 +345,7 @@ public enum Message: Sendable {
         case let .fileEnd(id, cancelled): w.u8(Kind.fileEnd.rawValue); w.u32(id); w.bool(cancelled)
         case let .udpOffer(sid, port): w.u8(Kind.udpOffer.rawValue); w.blob(sid); w.u16(port)
         case .udpReady: w.u8(Kind.udpReady.rawValue)
+        case .udpClosed: w.u8(Kind.udpClosed.rawValue)
         case let .videoFeedback(rx, lost): w.u8(Kind.videoFeedback.rawValue); w.u32(rx); w.u32(lost)
         }
         return w.data
@@ -384,6 +387,7 @@ public enum Message: Sendable {
         case .fileEnd: return .fileEnd(id: try r.u32(), cancelled: try r.bool())
         case .udpOffer: return .udpOffer(sessionID: try r.blob(), port: try r.u16())
         case .udpReady: return .udpReady
+        case .udpClosed: return .udpClosed
         case .videoFeedback: return .videoFeedback(received: try r.u32(), lost: try r.u32())
         }
     }

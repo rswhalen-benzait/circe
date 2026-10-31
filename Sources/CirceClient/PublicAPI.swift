@@ -302,6 +302,7 @@ private final class Link: @unchecked Sendable {
     private var framesLost: UInt32 = 0
     private var transportName = "TCP"
     private var totalDropped = 0
+    private var lastUDPMicros: UInt64 = 0
 
     struct Snapshot { var fps: Double; var bitrateMbps: Double; var latencyMs: Double; var rttMs: Double; var transport: String; var dropped: Int }
 
@@ -408,6 +409,8 @@ private final class Link: @unchecked Sendable {
             guard serverHello != nil else { return }
             pingID &+= 1
             conn?.send(.ping(id: pingID, sentMicros: Clock.micros()))
+            // The host heartbeats every 0.5 s on UDP; 2 s of silence means the path is gone.
+            if udpReady, Clock.micros() &- lastUDPMicros > 2_000_000 { abandonUDP() }
             if pingID % 2 == 0 {
                 conn?.send(.videoFeedback(received: framesReceived, lost: framesLost))
                 framesReceived = 0
@@ -459,7 +462,10 @@ private final class Link: @unchecked Sendable {
             openUDP(sessionID: sid, port: port)
         case .udpReady:
             udpReady = true
+            lastUDPMicros = Clock.micros()
             transportName = "UDP"
+        case .udpClosed:
+            closeUDP()
         case .audio(let a):
             bytesMeter.add(Double(a.data.count))
             audio?.enqueue(a)
@@ -505,6 +511,10 @@ private final class Link: @unchecked Sendable {
     /// Test hook: drop this fraction of incoming video datagrams.
     static let simulatedLoss = Double(ProcessInfo.processInfo.environment["CIRCE_SIMULATE_LOSS"] ?? "") ?? 0
     static let udpDisabled = ProcessInfo.processInfo.environment["CIRCE_DISABLE_UDP"] == "1"
+    /// Test hook: after N seconds, silently drop all UDP (models a firewall/NAT blackhole).
+    static let blackholeAfter = Double(ProcessInfo.processInfo.environment["CIRCE_UDP_BLACKHOLE_AFTER"] ?? "")
+    static let processStart = Date()
+    static var simulatedBlackhole: Bool { blackholeAfter.map { Date().timeIntervalSince(processStart) > $0 } ?? false }
 
     private func openUDP(sessionID: Data, port: UInt16) {
         guard !Self.udpDisabled, udp == nil,
@@ -534,9 +544,11 @@ private final class Link: @unchecked Sendable {
     private func receiveUDP(_ c: NWConnection) {
         c.receiveMessage { [weak self] data, _, _, error in
             guard let self, self.udp === c else { return }
+            if Self.simulatedBlackhole { return self.receiveUDP(c) }
             if let data, Self.simulatedLoss == 0 || Double.random(in: 0..<1) >= Self.simulatedLoss,
                var rx = self.udpReceive, let plain = rx.open(data) {
                 self.udpReceive = rx
+                self.lastUDPMicros = Clock.micros()
                 let (frames, lost) = self.reassembler.add(plain)
                 if lost {
                     self.framesLost &+= 1
@@ -549,8 +561,16 @@ private final class Link: @unchecked Sendable {
                     if let f = try? VideoFrame.decode(&r) { self.video(f) }
                 }
             }
-            if error == nil { self.receiveUDP(c) }
+            if error == nil { self.receiveUDP(c) } else { self.abandonUDP() }
         }
+    }
+
+    /// UDP went quiet or errored while TCP is fine: switch video back to TCP without dropping the session.
+    private func abandonUDP() {
+        guard udp != nil else { return }
+        closeUDP()
+        conn?.send(.udpClosed)
+        renderer.awaitKeyframe()
     }
 
     private func closeUDP() {

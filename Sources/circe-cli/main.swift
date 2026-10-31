@@ -74,6 +74,7 @@ func runConnect() {
     var lastState: ClientState?
     var start: Date?
     var maxFPS = 0.0
+    var restarted = false
     Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
         MainActor.assumeIsolated {
             if session.state != lastState {
@@ -94,6 +95,14 @@ func runConnect() {
                     if let f = value("--send") { session.sendFiles([URL(fileURLWithPath: f)]) }
                 }
                 if case .disconnected(let r) = session.state { log("disconnected: \(r ?? "-")"); exit(4) }
+            }
+            if let start, let after = value("--restart-after").flatMap(Double.init), !restarted,
+               Date().timeIntervalSince(start) >= after {
+                // Forces a host pipeline restart (new capturer + encoder) mid-session.
+                restarted = true
+                session.setQuality(.ultra)
+                session.update { $0.maxFPS = 59 }
+                log("requested pipeline restart")
             }
             if let start {
                 let s = session.stats

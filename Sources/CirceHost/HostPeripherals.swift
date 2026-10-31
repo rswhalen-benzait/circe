@@ -76,6 +76,7 @@ final class CursorMonitor {
     private var lastHash: Data?
     private var ids: [Data: UInt32] = [:]
     private var nextID: UInt32 = 1
+    private var pngs: [UInt32: Data] = [:]
     var onShape: ((CursorShape) -> Void)?
 
     func start() {
@@ -96,14 +97,12 @@ final class CursorMonitor {
         let hash = Data(SHA256.hash(data: tiff))
         guard hash != lastHash else { return }
         lastHash = hash
+        // Always ship the full image: clients join at different times and can't share our cache.
+        // Cursor changes are rare and images are small (~10 KB).
         let id: UInt32
-        var png = Data()
-        if let known = ids[hash] {
-            id = known
-        } else {
-            id = nextID; nextID += 1; ids[hash] = id
-            if let rep = NSBitmapImageRep(data: tiff) { png = rep.representation(using: .png, properties: [:]) ?? Data() }
-        }
+        if let known = ids[hash] { id = known } else { id = nextID; nextID += 1; ids[hash] = id }
+        let png = pngs[id] ?? (NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) ?? Data())
+        pngs[id] = png
         onShape?(CursorShape(id: id, hotspotX: Float(cursor.hotSpot.x), hotspotY: Float(cursor.hotSpot.y),
                              width: Float(image.size.width), height: Float(image.size.height), png: png))
     }
@@ -166,15 +165,18 @@ final class FileReceiver {
         while safe.hasPrefix(".") { safe.removeFirst() }
         if safe.isEmpty { safe = "Received file" }
         let dir = Self.overrideDirectory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        var url = dir.appendingPathComponent(safe)
-        let base = url.deletingPathExtension().lastPathComponent, ext = url.pathExtension
-        var n = 2
-        while FileManager.default.fileExists(atPath: url.path) {
-            url = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
-            n += 1
+        let first = dir.appendingPathComponent(safe)
+        let base = first.deletingPathExtension().lastPathComponent, ext = first.pathExtension
+        // O_EXCL makes "pick a free name" atomic, even with several sessions dropping the same file name.
+        var url = first
+        var fd: Int32 = -1
+        for n in 1...10_000 {
+            if n > 1 { url = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)") }
+            fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+            if fd >= 0 || errno != EEXIST { break }
         }
-        guard FileManager.default.createFile(atPath: url.path, contents: nil),
-              let h = try? FileHandle(forWritingTo: url) else { return }
+        guard fd >= 0 else { return }
+        let h = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         files[id] = (h, url, size, 0)
     }
 

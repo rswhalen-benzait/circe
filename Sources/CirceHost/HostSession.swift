@@ -148,6 +148,8 @@ final class HostSession: @unchecked Sendable {
             files.chunk(id: id, data: data)
         case let (.streaming, .fileEnd(id, cancelled)):
             files.end(id: id, cancelled: cancelled)
+        case (.streaming, .udpClosed):
+            fallBackToTCP(notifyClient: false)
         case let (.streaming, .videoFeedback(received, lost)):
             pipeLock.withLock { reportedLoss += Int(lost); reportedFrames += Int(received) + Int(lost) }
         case (_, .ping(let id, let t)):
@@ -232,7 +234,7 @@ final class HostSession: @unchecked Sendable {
 
     // MARK: Streaming pipeline
 
-    private let modeMatcher = DisplayModeMatcher()
+    private let modeMatcher = DisplayModeMatcher.shared
     private let files = FileReceiver()
 
     private func reconfigure(_ cfg: StreamConfig) {
@@ -241,11 +243,10 @@ final class HostSession: @unchecked Sendable {
             if cfg.viewportPointWidth != config.viewportPointWidth || cfg.viewportPointHeight != config.viewportPointHeight
                 || config.matchResolution != true || cfg.displayID != config.displayID {
                 let target = cfg.displayID ?? capturer?.display?.displayID ?? CGMainDisplayID()
-                modeChanged = modeMatcher.match(display: target, pointWidth: w, pointHeight: h)
+                modeChanged = modeMatcher.match(owner: id, display: target, pointWidth: w, pointHeight: h)
             }
         } else if config.matchResolution == true {
-            modeMatcher.restore()
-            modeChanged = true
+            modeChanged = modeMatcher.release(owner: id)
         }
         let needsRestart = modeChanged || (capturer == nil && synthetic == nil) || cfg.displayID != config.displayID || cfg.maxFPS != config.maxFPS
             || cfg.localCursor != config.localCursor || cfg.audioEnabled != config.audioEnabled
@@ -263,20 +264,47 @@ final class HostSession: @unchecked Sendable {
     }
 
     private var synthetic: SyntheticCapturer?
-
     private var restartPending = false
+
+    // Pipeline ownership. Each (re)start bumps `generation`; callbacks from an older capturer or
+    // encoder carry their generation and are ignored. The live encoder is only touched under `pipeLock`.
+    private var generation = 0
+    private var liveGeneration = -1
+    private var liveEncoder: VideoEncoder?
+    /// Session-wide frame IDs: never restart with a new encoder, so clients can detect gaps reliably.
+    private var nextFrameNumber: UInt32 = 1
 
     private func startPipeline() {
         guard !startingPipeline else { restartPending = true; return }
         startingPipeline = true
         stopPipeline()
+        generation += 1
+        let gen = generation
         let cfg = config
         let fps = max(15, min(cfg.maxFPS, 120))
         if policy.syntheticCapture {
-            startSynthetic(fps: fps)
+            startSynthetic(fps: fps, gen: gen)
             return
         }
         let capturer = ScreenCapturer()
+        // Callbacks are installed before capture starts and never mutated afterwards (no cross-queue races).
+        let audio = AudioPacketizer()
+        capturer.onVideo = { [weak self] pb, t in self?.captured(pb, t, gen: gen) }
+        capturer.onAudio = { [weak self] sb in
+            guard let self else { return }
+            let packets = audio.packets(from: sb, captureMicros: Clock.micros())
+            guard !packets.isEmpty else { return }
+            self.queue.async {
+                guard self.phase == .streaming, gen == self.generation else { return }
+                for p in packets { self.conn.send(.audio(p)) }
+            }
+        }
+        capturer.onStop = { [weak self] err in
+            self?.queue.async {
+                guard let self, gen == self.generation else { return }
+                self.conn.close(goodbye: "Screen capture stopped: \(err?.localizedDescription ?? "")")
+            }
+        }
         let opts = ScreenCapturer.Options(displayID: cfg.displayID, fps: fps, showsCursor: !cfg.localCursor,
                                           captureAudio: cfg.audioEnabled,
                                           maxPixelWidth: cfg.viewportPixelWidth, maxPixelHeight: cfg.viewportPixelHeight)
@@ -284,7 +312,7 @@ final class HostSession: @unchecked Sendable {
             do {
                 let displays = try await ScreenCapturer.displays()
                 try await capturer.start(opts)
-                self.queue.async { self.pipelineStarted(capturer, displays: displays, fps: fps) }
+                self.queue.async { self.pipelineStarted(capturer, displays: displays, fps: fps, gen: gen, audio: audio) }
             } catch {
                 self.queue.async {
                     self.startingPipeline = false
@@ -297,67 +325,58 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    private func startSynthetic(fps: Int) {
+    private func makeEncoder(width: Int, height: Int, fps: Int, bitrate: Int, gen: Int) -> VideoEncoder? {
+        guard let encoder = VideoEncoder(width: width, height: height, fps: fps, bitrate: bitrate, preferred: config.codecs) else {
+            return nil
+        }
+        encoder.onFrame = { [weak self] frame in self?.queue.async { self?.sendVideo(frame, gen: gen) } }
+        encoder.onDrop = { [weak self] in self?.queue.async { if self?.generation == gen { self?.frameSent() } } }
+        self.encoder = encoder
+        pipeLock.withLock { liveEncoder = encoder; liveGeneration = gen }
+        return encoder
+    }
+
+    private func startSynthetic(fps: Int, gen: Int) {
         startingPipeline = false
         let synth = SyntheticCapturer()
         let d = synth.display
-        guard let encoder = VideoEncoder(width: d.pixelWidth, height: d.pixelHeight, fps: fps,
-                                         bitrate: defaultBitrate(width: d.pixelWidth, height: d.pixelHeight, fps: fps, quality: config.quality),
-                                         preferred: config.codecs) else {
+        let bitrate = defaultBitrate(width: d.pixelWidth, height: d.pixelHeight, fps: fps, quality: config.quality)
+        guard let encoder = makeEncoder(width: d.pixelWidth, height: d.pixelHeight, fps: fps, bitrate: bitrate, gen: gen) else {
             conn.close(goodbye: "No hardware video encoder available"); return
         }
-        self.encoder = encoder
-        self.synthetic = synth
-        encoder.onFrame = { [weak self] frame in self?.queue.async { self?.sendVideo(frame) } }
-        encoder.onDrop = { [weak self] in self?.queue.async { self?.frameSent() } }
-        synth.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
+        synthetic = synth
+        synth.onVideo = { [weak self] pb, t in self?.captured(pb, t, gen: gen) }
         conn.send(.streamStart(StreamStart(codec: encoder.codec, display: d, displays: [d],
                                            encodedWidth: d.pixelWidth, encodedHeight: d.pixelHeight, audio: nil,
                                            hostClockMicros: Clock.micros())))
-        startAdaptiveBitrate(defaultBitrate(width: d.pixelWidth, height: d.pixelHeight, fps: fps, quality: config.quality))
+        startAdaptiveBitrate(bitrate)
         synth.start(fps: fps)
         offerUDP()
         onStreamingStarted?(self)
     }
 
-    private func pipelineStarted(_ capturer: ScreenCapturer, displays: [DisplayDescriptor], fps: Int) {
+    private func pipelineStarted(_ capturer: ScreenCapturer, displays: [DisplayDescriptor], fps: Int, gen: Int,
+                                 audio: AudioPacketizer) {
         startingPipeline = false
-        if restartPending {
+        if restartPending || gen != generation {
             // Config changed while ScreenCaptureKit was starting; start over with the latest settings.
             restartPending = false
             capturer.stop()
-            startPipeline()
+            if phase == .streaming { startPipeline() }
             return
         }
         guard phase == .streaming, let display = capturer.display else { capturer.stop(); return }
         let (w, h) = capturer.encodedSize
         let bitrate = config.bitrate ?? defaultBitrate(width: w, height: h, fps: fps, quality: config.quality)
-        guard let encoder = VideoEncoder(width: w, height: h, fps: fps, bitrate: bitrate, preferred: config.codecs) else {
+        guard let encoder = makeEncoder(width: w, height: h, fps: fps, bitrate: bitrate, gen: gen) else {
             capturer.stop()
             conn.close(goodbye: "No hardware video encoder available")
             return
         }
         self.capturer = capturer
-        self.encoder = encoder
         injector?.setDisplay(display.displayID)
-
-        encoder.onFrame = { [weak self] frame in self?.queue.async { self?.sendVideo(frame) } }
-        encoder.onDrop = { [weak self] in self?.queue.async { self?.frameSent() } }
-        capturer.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
-        let audio = AudioPacketizer()
-        capturer.onAudio = { [weak self] sb in
-            guard let self else { return }
-            let packets = audio.packets(from: sb, captureMicros: Clock.micros())
-            guard !packets.isEmpty else { return }
-            self.queue.async { if self.phase == .streaming { for p in packets { self.conn.send(.audio(p)) } } }
-        }
-        capturer.onStop = { [weak self] err in
-            self?.queue.async { self?.conn.close(goodbye: "Screen capture stopped: \(err?.localizedDescription ?? "")") }
-        }
-
         startAdaptiveBitrate(bitrate)
         holdPowerAssertion()
-
         conn.send(.streamStart(StreamStart(codec: encoder.codec, display: display, displays: displays,
                                            encodedWidth: w, encodedHeight: h,
                                            audio: config.audioEnabled ? audio.format : nil,
@@ -367,6 +386,8 @@ final class HostSession: @unchecked Sendable {
     }
 
     // MARK: UDP video
+
+    private var udpHeartbeat: DispatchSourceTimer?
 
     private func offerUDP() {
         guard !udpOffered, let port = policy.udpPort else { return }
@@ -382,6 +403,7 @@ final class HostSession: @unchecked Sendable {
             if udp == nil {
                 udp = c
                 conn.send(.udpReady)
+                startUDPHeartbeat()
                 refreshKeyframe()
             } else if udp !== c {
                 // Client's address changed (e.g. Wi-Fi roam): follow it.
@@ -392,18 +414,48 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    /// Lets the client tell a quiet (static) screen from a dead UDP path.
+    private func startUDPHeartbeat() {
+        udpHeartbeat?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 0.5, repeating: 0.5)
+        t.setEventHandler { [weak self] in
+            guard let self, let udp = self.udp, var tx = self.udpSend else { return }
+            udp.send(content: tx.seal(Data()), completion: .idempotent)
+            self.udpSend = tx
+        }
+        t.resume()
+        udpHeartbeat = t
+    }
+
     private func receiveUDP(_ c: NWConnection) {
         c.receiveMessage { [weak self] data, _, _, error in
-            guard let self, error == nil else { return }
+            guard let self else { return }
             self.queue.async {
+                guard self.udp === c else { return }
+                if error != nil { self.fallBackToTCP(notifyClient: true); return }
                 if let data, var rx = self.udpReceive, UDPHello.verify(data, cipher: &rx) { self.udpReceive = rx }
-                if self.udp === c { self.receiveUDP(c) }
+                self.receiveUDP(c)
             }
         }
     }
 
-    private func sendVideo(_ frame: VideoFrame) {
-        guard phase == .streaming else { return }
+    /// UDP stopped working: carry on over TCP (the session never drops because of it).
+    private func fallBackToTCP(notifyClient: Bool) {
+        guard udp != nil else { return }
+        udp?.cancel()
+        udp = nil
+        udpHeartbeat?.cancel()
+        udpHeartbeat = nil
+        if notifyClient { conn.send(.udpClosed) }
+        refreshKeyframe()
+    }
+
+    private func sendVideo(_ frame: VideoFrame, gen: Int) {
+        guard phase == .streaming, gen == generation else { return }
+        var frame = frame
+        frame.frameNumber = nextFrameNumber
+        nextFrameNumber &+= 1
         if let udp, var tx = udpSend {
             var w = ByteWriter(capacity: frame.data.count + 64)
             frame.encode(into: &w)
@@ -414,7 +466,10 @@ final class HostSession: @unchecked Sendable {
             udpSend = tx
             frameSent()
         } else {
-            conn.send(.video(frame)) { [weak self] _ in self?.frameSent() }
+            conn.send(.video(frame)) { [weak self] _ in
+                guard let self, self.generation == gen else { return }
+                self.frameSent()
+            }
         }
     }
 
@@ -476,59 +531,61 @@ final class HostSession: @unchecked Sendable {
         if powerAssertion != 0 { IOPMAssertionRelease(powerAssertion); powerAssertion = 0 }
     }
 
-    private func captured(_ pb: CVPixelBuffer, _ t: UInt64) {
-        let encodeNow: Bool = pipeLock.withLock {
+    private func captured(_ pb: CVPixelBuffer, _ t: UInt64, gen: Int) {
+        pipeLock.withLock {
+            guard gen == liveGeneration, let enc = liveEncoder else { return }
             lastBuffer = (pb, t)
-            if videoPaused { return false }
+            if videoPaused { return }
             if inFlight >= maxInFlight {
                 if pendingBuffer != nil { skippedFrames += 1 }
                 pendingBuffer = (pb, t)
-                return false
+                return
             }
             inFlight += 1
-            return true
+            enc.encode(pb, captureMicros: t)
         }
-        if encodeNow { encoder?.encode(pb, captureMicros: t) }
     }
 
+    /// Session queue: a frame left the pipeline (sent, or dropped by the encoder).
     private func frameSent() {
-        let next: (CVPixelBuffer, UInt64)? = pipeLock.withLock {
+        pipeLock.withLock {
             inFlight = max(0, inFlight - 1)
-            guard let p = pendingBuffer else { return nil }
+            guard let (pb, t) = pendingBuffer, let enc = liveEncoder else { return }
             pendingBuffer = nil
             inFlight += 1
-            return p
+            enc.encode(pb, captureMicros: t)
         }
-        if let (pb, t) = next { encoder?.encode(pb, captureMicros: t) }
     }
 
     private func refreshKeyframe() {
-        guard let encoder else { return }
-        encoder.requestKeyframe()
-        // Static screens produce no new frames, so re-encode the last one to deliver the keyframe now.
-        let last: (CVPixelBuffer, UInt64)? = pipeLock.withLock {
-            guard let l = lastBuffer else { return nil }
+        pipeLock.withLock {
+            guard let enc = liveEncoder else { return }
+            enc.requestKeyframe()
+            // Static screens produce no new frames, so re-encode the last one to deliver the keyframe now.
+            guard let (pb, _) = lastBuffer else { return }
             inFlight += 1
-            return l
+            enc.encode(pb, captureMicros: Clock.micros())
         }
-        if let (pb, _) = last { encoder.encode(pb, captureMicros: Clock.micros()) }
     }
 
     private func stopPipeline() {
         abrTimer?.cancel()
         abrTimer = nil
-        synthetic?.onVideo = nil
+        let old = pipeLock.withLock { () -> VideoEncoder? in
+            let e = liveEncoder
+            liveEncoder = nil
+            liveGeneration = -1
+            inFlight = 0
+            pendingBuffer = nil
+            lastBuffer = nil
+            return e
+        }
         synthetic?.stop()
         synthetic = nil
-        capturer?.onVideo = nil
-        capturer?.onAudio = nil
-        capturer?.onStop = nil
         capturer?.stop()
         capturer = nil
-        encoder?.onFrame = nil
-        encoder?.invalidate()
+        old?.invalidate()
         encoder = nil
-        pipeLock.withLock { inFlight = 0; pendingBuffer = nil; lastBuffer = nil }
     }
 
     private func teardown(reason: String?) {
@@ -538,7 +595,9 @@ final class HostSession: @unchecked Sendable {
         stopPipeline()
         udp?.cancel()
         udp = nil
-        modeMatcher.restore()
+        udpHeartbeat?.cancel()
+        udpHeartbeat = nil
+        modeMatcher.release(owner: id)
         files.cancelAll()
         releasePowerAssertion()
         injector?.releaseAll()

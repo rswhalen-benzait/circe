@@ -77,9 +77,17 @@ public final class FrameReassembler {
         if completed.contains(f) { return ([], false) }
         if let h = highestDelivered, f &- h > UInt32.max / 2 { return ([], false) } // older than delivered
 
+        // Every shard must have exactly the size its position implies; malformed input is dropped, never trusted.
+        let i = Int(idx)
+        let payloadSize = r.remaining
+        let expected = i >= dataShards ? VideoDatagrams.shardSize
+            : i == dataShards - 1 ? length - i * VideoDatagrams.shardSize : VideoDatagrams.shardSize
+        guard length > (dataShards - 1) * VideoDatagrams.shardSize, payloadSize == expected else { return ([], false) }
+
         var part = partials[f] ?? Partial(dataShards: dataShards, parityShards: parityShards, groupSize: groupSize,
                                               length: length, firstSeen: now)
-        guard part.dataShards == dataShards else { return ([], false) }
+        guard part.dataShards == dataShards, part.parityShards == parityShards, part.groupSize == groupSize,
+              part.length == length else { return ([], false) }
         part.shards[Int(idx)] = r.rest()
         var out: [(UInt32, Data)] = []
         if let frame = tryComplete(&part) {
