@@ -219,13 +219,16 @@ public enum LinuxSetup {
 
     public static let resultMarker = "CIRCE_SETUP_RESULT "
 
-    /// Runs `script` remotely as `bash -s -- arguments`. Output lines stream to `onOutput` (main queue).
+    /// Runs `script` remotely with `arguments`. Output lines stream to `onOutput` (main queue).
     @discardableResult
     public static func run(tunnel: RFBTunnel, script: Data, arguments: [String] = [],
                            onOutput: @escaping @Sendable (String) -> Void,
                            completion: @escaping @Sendable (Result<Report, Failure>) -> Void) -> (() -> Void)? {
         let quoted = arguments.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
-        guard let (exe, args) = try? tunnel.remoteCommand("bash -s -- \(quoted)") else {
+        // Upload to a temp file first, then run it with stdin at EOF. Piping straight into `bash -s` lets
+        // any command that reads stdin (apt, sudo, …) swallow the rest of the script.
+        let remote = "f=$(mktemp) && cat > \"$f\" && bash \"$f\" \(quoted) </dev/null; rc=$?; rm -f \"$f\"; exit $rc"
+        guard let (exe, args) = try? tunnel.remoteCommand(remote) else {
             completion(.failure(.tunnel("Setup needs an SSH or Google Cloud connection.")))
             return nil
         }
