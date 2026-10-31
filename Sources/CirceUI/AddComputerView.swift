@@ -12,6 +12,10 @@ public struct AddComputerView: View {
         self.model = model; isEditing = computer != nil
         _draft = CirceViewState(initialValue: ComputerDraft(computer: computer))
     }
+    init(model: CirceModel, draft: ComputerDraft) {
+        self.model = model; isEditing = false
+        _draft = CirceViewState(initialValue: draft)
+    }
     private var status: ComputerSetupStatus? { model.computerSetups[draft.id] }
     private var running: Bool { model.isSettingUp(draft.id) }
     private var displayNumber: Int { min(max(Int(draft.display.replacingOccurrences(of: ":", with: "")) ?? 1, 1), 99) }

@@ -51,6 +51,8 @@ struct PreviewExporter {
             try model.saveComputer(cloud); try model.saveComputer(linux)
             try save("launcher-computers", LauncherView(model: model).frame(width: 640, height: 850))
             try save("computer-add", AddComputerView(model: model))
+            try save("computer-add-google-cloud", AddComputerView(model: model, draft: cloudDraft))
+            try save("computer-add-ssh", AddComputerView(model: model, draft: sshDraft))
             try save("computer-google-cloud", AddComputerView(model: model, computer: cloud))
             try save("computer-ssh", AddComputerView(model: model, computer: linux))
             try save("settings-computers", CirceSettingsView(model: model, initialTab: .computers))
