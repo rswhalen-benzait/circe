@@ -9,6 +9,7 @@ public final class VNCDisplayView: NSView {
     var framebufferSize = CGSize(width: 16, height: 10) { didSet { needsLayout = true; window?.invalidateCursorRects(for: self) } }
 
     public var capturesSystemShortcuts = true { didSet { updateKeyboardCapture() } }
+    var onFocusChange: ((Bool) -> Void)?
 
     private var buttons: UInt8 = 0
     private var downKeys: [UInt16: UInt32] = [:]
@@ -107,6 +108,7 @@ public final class VNCDisplayView: NSView {
     private var hasInputFocus: Bool { (window?.isKeyWindow ?? false) && NSApp.isActive && window?.firstResponder === self }
 
     @objc private func focusChanged() {
+        onFocusChange?((window?.isKeyWindow ?? false) && NSApp.isActive)
         if !hasInputFocus { releaseAll() }
         updateKeyboardCapture()
     }

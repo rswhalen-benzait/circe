@@ -29,11 +29,21 @@ public final class VNCSession: ObservableObject, Identifiable {
     private var lastBytes: UInt64 = 0
     private var credentials: RFBClient.Credentials?
     private let keychainAccount: String
+    private var hasFocus = false
+    private var pendingClipboard: String?
 
     public init(endpoint: NWEndpoint, name: String) {
         self.endpoint = endpoint
         self.hostName = name
         keychainAccount = "\(endpoint)"
+        displayView.onFocusChange = { [weak self] focused in
+            guard let self else { return }
+            self.hasFocus = focused
+            if focused, let text = self.pendingClipboard, self.clipboardSyncEnabled {
+                self.pendingClipboard = nil
+                self.client?.sendClipboard(text)
+            }
+        }
     }
 
     /// "vnc://host[:port]" or "host:5900".
@@ -148,9 +158,10 @@ public final class VNCSession: ObservableObject, Identifiable {
             guard clipboard == nil else { return }
             let c = ClipboardSync()
             c.onLocalChange = { [weak self] p in
-                if let d = p.items[NSPasteboard.PasteboardType.string.rawValue], let s = String(data: d, encoding: .utf8) {
-                    self?.client?.sendClipboard(s)
-                }
+                guard let self, let d = p.items[NSPasteboard.PasteboardType.string.rawValue],
+                      let s = String(data: d, encoding: .utf8) else { return }
+                // Same rule as native sessions: only share our clipboard while the session is focused.
+                if self.hasFocus { self.client?.sendClipboard(s) } else { self.pendingClipboard = s }
             }
             c.start()
             clipboard = c
