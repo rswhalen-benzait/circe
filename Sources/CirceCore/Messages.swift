@@ -127,6 +127,8 @@ public struct StreamConfig: Codable, Sendable, Equatable {
     public var matchResolution: Bool?
     public var viewportPointWidth: Double?
     public var viewportPointHeight: Double?
+    /// Client window is hidden/minimized: stop sending video (audio continues).
+    public var videoPaused: Bool?
 
     public init(displayID: UInt32? = nil, quality: QualityPreset = .high, maxFPS: Int = 60, bitrate: Int? = nil,
                 audioEnabled: Bool = true, localCursor: Bool = true, viewportPixelWidth: Int? = nil,

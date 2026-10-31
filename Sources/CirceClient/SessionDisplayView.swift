@@ -11,6 +11,7 @@ public final class SessionDisplayView: NSView {
     /// Size in points after the user stops resizing (debounced).
     var onSettledResize: ((CGSize) -> Void)?
     var onDropFiles: (([URL]) -> Void)?
+    var onVisibilityChange: ((Bool) -> Void)?
     private var resizeWork: DispatchWorkItem?
 
     /// Remote display size in points; used to letterbox and map coordinates.
@@ -130,12 +131,18 @@ public final class SessionDisplayView: NSView {
                                                name: NSApplication.didResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(windowFocusChanged),
                                                name: NSApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(occlusionChanged),
+                                               name: NSWindow.didChangeOcclusionStateNotification, object: w)
         DispatchQueue.main.async { [weak self] in
             guard let self, let w = self.window else { return }
             w.makeFirstResponder(self)
             w.acceptsMouseMovedEvents = true
             self.windowFocusChanged()
         }
+    }
+
+    @objc private func occlusionChanged() {
+        onVisibilityChange?(window?.occlusionState.contains(.visible) ?? false)
     }
 
     @objc private func windowFocusChanged() {

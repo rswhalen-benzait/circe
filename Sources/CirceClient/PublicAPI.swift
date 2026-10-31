@@ -66,6 +66,10 @@ public final class ClientSession: ObservableObject, Identifiable {
         displayView.localCursor = config.localCursor
         displayView.onSettledResize = { [weak self] size in self?.sendViewport(size) }
         displayView.onDropFiles = { [weak self] urls in self?.sendFiles(urls) }
+        displayView.onVisibilityChange = { [weak self] visible in
+            guard let self, self.config.videoPaused != !visible else { return }
+            self.update { $0.videoPaused = !visible }
+        }
     }
 
     private func sendViewport(_ size: CGSize) {

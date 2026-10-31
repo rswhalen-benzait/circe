@@ -59,6 +59,7 @@ final class HostSession: @unchecked Sendable {
     private var pendingBuffer: (CVPixelBuffer, UInt64)?
     private var lastBuffer: (CVPixelBuffer, UInt64)?
     private let maxInFlight = 2
+    private var videoPaused = false
 
     // Adaptive bitrate: back off when the link can't keep up, creep back when it can.
     private var skippedFrames = 0
@@ -229,7 +230,10 @@ final class HostSession: @unchecked Sendable {
             || cfg.localCursor != config.localCursor || cfg.audioEnabled != config.audioEnabled
             || cfg.viewportPixelWidth != config.viewportPixelWidth || cfg.viewportPixelHeight != config.viewportPixelHeight
         let bitrateChanged = cfg.bitrate != config.bitrate || cfg.quality != config.quality
+        let resumed = config.videoPaused == true && cfg.videoPaused != true
+        pipeLock.withLock { videoPaused = cfg.videoPaused == true }
         config = cfg
+        if resumed && !needsRestart { refreshKeyframe() }
         if needsRestart {
             startPipeline()
         } else if bitrateChanged, let enc = encoder {
@@ -239,8 +243,10 @@ final class HostSession: @unchecked Sendable {
 
     private var synthetic: SyntheticCapturer?
 
+    private var restartPending = false
+
     private func startPipeline() {
-        guard !startingPipeline else { return }
+        guard !startingPipeline else { restartPending = true; return }
         startingPipeline = true
         stopPipeline()
         let cfg = config
@@ -261,6 +267,7 @@ final class HostSession: @unchecked Sendable {
             } catch {
                 self.queue.async {
                     self.startingPipeline = false
+                    self.restartPending = false
                     self.conn.close(goodbye: Permissions.screenRecording
                                     ? "Couldn't capture the screen: \(error.localizedDescription)"
                                     : "This Mac hasn't allowed Circe to record the screen yet")
@@ -295,6 +302,13 @@ final class HostSession: @unchecked Sendable {
 
     private func pipelineStarted(_ capturer: ScreenCapturer, displays: [DisplayDescriptor], fps: Int) {
         startingPipeline = false
+        if restartPending {
+            // Config changed while ScreenCaptureKit was starting; start over with the latest settings.
+            restartPending = false
+            capturer.stop()
+            startPipeline()
+            return
+        }
         guard phase == .streaming, let display = capturer.display else { capturer.stop(); return }
         let (w, h) = capturer.encodedSize
         let bitrate = config.bitrate ?? defaultBitrate(width: w, height: h, fps: fps, quality: config.quality)
@@ -384,6 +398,7 @@ final class HostSession: @unchecked Sendable {
     private func captured(_ pb: CVPixelBuffer, _ t: UInt64) {
         let encodeNow: Bool = pipeLock.withLock {
             lastBuffer = (pb, t)
+            if videoPaused { return false }
             if inFlight >= maxInFlight {
                 if pendingBuffer != nil { skippedFrames += 1 }
                 pendingBuffer = (pb, t)
