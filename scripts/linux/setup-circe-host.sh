@@ -347,7 +347,8 @@ FILTER=""
 if ((WIDTH != SOURCE_WIDTH || HEIGHT != SOURCE_HEIGHT)); then FILTER="scale=$WIDTH:$HEIGHT:flags=fast_bilinear,"; fi
 WIDTH=$(((WIDTH + 1) / 2 * 2)); HEIGHT=$(((HEIGHT + 1) / 2 * 2))
 FILTER+="format=bgr0,pad=ceil(iw/2)*2:ceil(ih/2)*2,scale=in_range=full:out_range=limited:out_color_matrix=bt709,format=yuv420p"
-VBV=$((BITRATE / 10)) # roughly 100ms, with no filler packets burning idle bandwidth
+GOP=$((FPS * 10)) # TCP preserves frames; avoid a visible IDR quality pulse every second
+VBV=$((BITRATE / 4)) # 250ms allows a more detailed IDR without burning idle bandwidth
 MIN_VBV=$(((BITRATE + FPS - 1) / FPS))
 ((VBV >= MIN_VBV)) || VBV="$MIN_VBV" # never smaller than one frame at an explicit low FPS
 CONFIG="{\"version\":1,\"codec\":\"h264\",\"container\":\"flv\",\"encoder\":\"$ENCODER\",\"sourceWidth\":$SOURCE_WIDTH,\"sourceHeight\":$SOURCE_HEIGHT,\"width\":$WIDTH,\"height\":$HEIGHT,\"fps\":$FPS,\"bitrateKbps\":$BITRATE,\"threads\":$THREADS}"
@@ -358,7 +359,7 @@ if [[ "$ENCODER" == nvenc ]]; then
     ENCODER_ARGS=(-c:v h264_nvenc -preset p1 -tune ull -rc vbr -cq 18 -b:v "${BITRATE}k" -rc-lookahead 0 -zerolatency 1 -delay 0)
 else
     ENCODER_ARGS=(-c:v libx264 -preset ultrafast -tune zerolatency -crf 18 -threads "$THREADS"
-        -x264-params "keyint=$FPS:min-keyint=$FPS:scenecut=0:rc-lookahead=0:sync-lookahead=0")
+        -x264-params "keyint=$GOP:min-keyint=$FPS:scenecut=0:rc-lookahead=0:sync-lookahead=0")
 fi
 # No -re: x11grab is paced at capture. One queued input frame, no B-frames, no audio or stdout logs.
 # A fresh FFmpeg process is required on resize or encoder failure; never concatenate FLV streams.
@@ -366,7 +367,7 @@ ffmpeg -nostdin -hide_banner -loglevel warning -copyts -start_at_zero -thread_qu
     -use_wallclock_as_timestamps 1 -f x11grab -draw_mouse 0 \
     -framerate "$FPS" -video_size "${SOURCE_WIDTH}x${SOURCE_HEIGHT}" -i "$X_DISPLAY" \
     -map 0:v:0 -an -sn -dn -filter_threads 1 -vf "$FILTER" "${ENCODER_ARGS[@]}" \
-    -profile:v high -pix_fmt yuv420p -bf 0 -g "$FPS" -maxrate "${BITRATE}k" -bufsize "${VBV}k" \
+    -profile:v high -pix_fmt yuv420p -bf 0 -g "$GOP" -maxrate "${BITRATE}k" -bufsize "${VBV}k" \
     -color_primaries bt709 -color_trc iec61966-2-1 -colorspace bt709 -color_range tv \
     -vsync 0 -f flv -flvflags no_duration_filesize -flush_packets 1 pipe:1 </dev/null &
 CHILD_PID=$!

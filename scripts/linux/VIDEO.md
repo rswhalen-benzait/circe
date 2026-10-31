@@ -64,7 +64,12 @@ Normal stdout is **video-only FLV carrying 8-bit 4:2:0 H.264/AVCC**. It includes
 an AVC configuration record, length-prefixed NAL units, and complete length-framed
 video tags. There are no B-frames, audio tags, shell logs, or JSON records on stream
 stdout. Packets are flushed immediately; duration/filesize backpatching is disabled.
-IDR spacing is about one second and VBV is roughly 100 ms (at least one frame).
+The maximum GOP is ten seconds; scene-cut IDRs are disabled for x264. Fresh
+streams always start with an IDR. Reliable TCP delivery and fresh encoders after
+resize or lag make frequent recovery frames unnecessary. The longer GOP reduces
+the periodic text softening caused by tightly budgeted IDRs. VBV is roughly
+250 ms (at least one frame); it is a rate-control budget, not an intentional
+playback delay. Actual quality and queueing still need measurement on the VM.
 Odd source dimensions receive minimal padding, with source and encoded dimensions
 reported separately. RGB conversion uses a BT.709 matrix and explicit SDR color
 tags, retaining the desktop's sRGB transfer curve.

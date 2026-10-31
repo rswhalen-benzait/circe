@@ -65,21 +65,24 @@ with tempfile.TemporaryDirectory(prefix='circe-video-check.') as directory:
     assert (c['encoder'],c['fps'],c['threads'],c['bitrateKbps'])==('x264',20,1,6000)
     capture=next(call for call in calls if call['command']=='ffmpeg' and 'x11grab' in call['args'])
     args=capture['args']
-    for flag,value in [('-draw_mouse','0'),('-bf','0'),('-g','20'),('-flush_packets','1'),('-f','x11grab'),('-use_wallclock_as_timestamps','1')]: assert args[args.index(flag)+1]==value
+    for flag,value in [('-draw_mouse','0'),('-bf','0'),('-g','200'),('-bufsize','1500k'),('-flush_packets','1'),('-f','x11grab'),('-use_wallclock_as_timestamps','1')]: assert args[args.index(flag)+1]==value
     assert '-copyts' in args and '-start_at_zero' in args and 'flv' in args and 'pipe:1' in args
     assert args[args.index('-i')+1]==':3.0' and capture['xauthority']==str(runtime/'circe-Xauthority')
     assert 'no_duration_filesize' in args and 'yuv420p' in args and '-intra-refresh' not in args
-    assert any('keyint=20' in arg and 'scenecut=0' in arg for arg in args)
+    assert any('keyint=200:min-keyint=20:scenecut=0' in arg for arg in args)
     p,_=run('--check',extra={'FIXTURE_CPUS':'4'})
     c=json.loads(p.stdout)
     assert (c['fps'],c['threads'],c['encoder'])==(30,2,'x264')
     assert 'CIRCE_VIDEO_CONFIG' not in p.stderr.decode()
-    print('CPU defaults, Xauthority, wallclock-derived PTS, short GOP, FLV stdout purity, and check mode passed.')
+    print('CPU defaults, Xauthority, wallclock-derived PTS, 10-second GOP, FLV stdout purity, and check mode passed.')
 
     p,calls=run('--check',extra={'FIXTURE_NVENC':'1'})
     c=json.loads(p.stdout)
     assert (c['encoder'],c['fps'],c['bitrateKbps'])==('nvenc',60,12000)
     assert any('h264_nvenc' in call['args'] and 'lavfi' in call['args'] for call in calls)
+    p,calls=run(extra={'FIXTURE_NVENC':'1'})
+    args=next(call['args'] for call in calls if 'x11grab' in call['args'])
+    assert args[args.index('-g')+1]=='600' and args[args.index('-bufsize')+1]=='3000k'
     p,_=run('--encoder','nvenc',code=69)
     assert not p.stdout and b'encoder_unavailable' in p.stderr
     p,_=run('--check',extra={'FIXTURE_NO_X264':'1'},code=69)
@@ -91,8 +94,10 @@ with tempfile.TemporaryDirectory(prefix='circe-video-check.') as directory:
     assert (c['fps'],c['threads'],c['bitrateKbps'],c['width'],c['height'])==(60,3,9000,1280,720)
     p,_=run('--check',extra={'FIXTURE_SIZE':'641x479'})
     c=json.loads(p.stdout);assert (c['sourceWidth'],c['sourceHeight'],c['width'],c['height'])==(641,479,642,480)
-    p,_=run('--fps','1','--bitrate-kbps','1000')
+    p,calls=run('--fps','1','--bitrate-kbps','1000')
     c=config(p); assert c['fps']==1
+    args=next(call['args'] for call in calls if 'x11grab' in call['args'])
+    assert args[args.index('-bufsize')+1]=='1000k', 'Explicit low FPS still needs room for one frame'
     print('Explicit overrides, aspect-preserving limits, odd-size padding, and low-FPS operation passed.')
 
     for args in [('--fps','0'),('--fps','121'),('--threads','0'),('--bitrate-kbps','10'),('--encoder','anything'),('--display','host:1'),('--max-width','2'),('--fps','--help'),('--unknown',)]:
