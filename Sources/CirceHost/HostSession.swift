@@ -314,9 +314,12 @@ final class HostSession: @unchecked Sendable {
             }
         }
         capturer.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
+        let audio = AudioPacketizer()
         capturer.onAudio = { [weak self] sb in
-            guard let self, let p = AudioPacketizer.packet(from: sb, captureMicros: Clock.micros()) else { return }
-            self.queue.async { if self.phase == .streaming { self.conn.send(.audio(p)) } }
+            guard let self else { return }
+            let packets = audio.packets(from: sb, captureMicros: Clock.micros())
+            guard !packets.isEmpty else { return }
+            self.queue.async { if self.phase == .streaming { for p in packets { self.conn.send(.audio(p)) } } }
         }
         capturer.onStop = { [weak self] err in
             self?.queue.async { self?.conn.close(goodbye: "Screen capture stopped: \(err?.localizedDescription ?? "")") }
@@ -327,7 +330,7 @@ final class HostSession: @unchecked Sendable {
 
         conn.send(.streamStart(StreamStart(codec: encoder.codec, display: display, displays: displays,
                                            encodedWidth: w, encodedHeight: h,
-                                           audio: config.audioEnabled ? AudioPacketizer.format : nil,
+                                           audio: config.audioEnabled ? audio.format : nil,
                                            hostClockMicros: Clock.micros())))
         onStreamingStarted?(self)
     }

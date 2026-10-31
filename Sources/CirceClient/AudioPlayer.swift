@@ -22,6 +22,8 @@ final class AudioPlayer: @unchecked Sendable {
         targetFrames = Int(format.sampleRate * 0.030)
         maxFrames = Int(format.sampleRate * 0.120)
         ring = [Float](repeating: 0, count: Int(format.sampleRate) * 2 * 2)
+        encoding = format.encoding
+        opus = format.encoding == .opus ? OpusDecoder() : nil
     }
 
     func start() {
@@ -46,18 +48,29 @@ final class AudioPlayer: @unchecked Sendable {
 
     func setMuted(_ muted: Bool) { engine.mainMixerNode.outputVolume = muted ? 0 : 1 }
 
-    /// Interleaved little-endian Int16 stereo.
+    private let opus: OpusDecoder?
+    private let encoding: AudioFormatDescriptor.Encoding
+
     func enqueue(_ packet: AudioPacket) {
-        let frames = packet.data.count / (2 * channels)
+        if encoding == .opus {
+            if let samples = opus?.decode(packet.data) { enqueue(interleaved: samples) }
+            return
+        }
+        // Interleaved little-endian Int16 stereo.
+        let samples = packet.data.withUnsafeBytes { raw -> [Float] in
+            raw.bindMemory(to: Int16.self).map { Float(Int16(littleEndian: $0)) / 32_768 }
+        }
+        enqueue(interleaved: samples)
+    }
+
+    private func enqueue(interleaved samples: [Float]) {
+        let frames = samples.count / channels
         lock.lock()
         defer { lock.unlock() }
-        packet.data.withUnsafeBytes { raw in
-            let src = raw.bindMemory(to: Int16.self)
-            let cap = ring.count
-            for i in 0..<(frames * channels) {
-                ring[writeIndex] = Float(Int16(littleEndian: src[i])) / 32_768
-                writeIndex = (writeIndex + 1) % cap
-            }
+        let cap = ring.count
+        for v in samples {
+            ring[writeIndex] = v
+            writeIndex = (writeIndex + 1) % cap
         }
         buffered += frames
         // Too much latency accumulated (e.g. after a network hiccup): skip ahead to the target.

@@ -8,11 +8,31 @@ import OpenDirectory
 
 // MARK: - Audio
 
-enum AudioPacketizer {
-    static let format = AudioFormatDescriptor(encoding: .pcm16, sampleRate: 48_000, channels: 2)
+/// Turns ScreenCaptureKit audio into Opus packets (PCM16 fallback if no Opus encoder).
+final class AudioPacketizer {
+    private let opus = OpusEncoder()
 
-    /// Converts a ScreenCaptureKit float PCM sample buffer to interleaved little-endian Int16 stereo.
-    static func packet(from sb: CMSampleBuffer, captureMicros: UInt64) -> AudioPacket? {
+    var format: AudioFormatDescriptor {
+        AudioFormatDescriptor(encoding: opus != nil ? .opus : .pcm16, sampleRate: 48_000, channels: 2)
+    }
+
+    func packets(from sb: CMSampleBuffer, captureMicros: UInt64) -> [AudioPacket] {
+        guard let samples = Self.interleavedFloats(sb), !samples.isEmpty else { return [] }
+        if let opus {
+            return opus.encode(interleaved: samples).map {
+                AudioPacket(captureMicros: captureMicros, frames: OpusFormat.framesPerPacket, data: $0)
+            }
+        }
+        var out = Data(count: samples.count * 2)
+        out.withUnsafeMutableBytes { raw in
+            let dst = raw.bindMemory(to: Int16.self)
+            for i in 0..<samples.count { dst[i] = Int16(max(-1, min(1, samples[i])) * 32_767).littleEndian }
+        }
+        return [AudioPacket(captureMicros: captureMicros, frames: UInt32(samples.count / 2), data: out)]
+    }
+
+    /// ScreenCaptureKit float PCM (usually non-interleaved) -> interleaved stereo floats.
+    static func interleavedFloats(_ sb: CMSampleBuffer) -> [Float]? {
         guard let fmt = sb.formatDescription,
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmt)?.pointee else { return nil }
         var blockBuffer: CMBlockBuffer?
@@ -32,27 +52,18 @@ enum AudioPacketizer {
         let frames = CMSampleBufferGetNumSamples(sb)
         let isFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
         let nonInterleaved = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
-        guard isFloat, asbd.mBitsPerChannel == 32, frames > 0 else { return nil }
-
-        var out = Data(count: frames * 2 * MemoryLayout<Int16>.size)
-        out.withUnsafeMutableBytes { raw in
-            let dst = raw.bindMemory(to: Int16.self)
-            func sample(_ ch: Int, _ i: Int) -> Float {
-                if nonInterleaved {
-                    let b = buffers[min(ch, buffers.count - 1)]
-                    return b.mData!.assumingMemoryBound(to: Float.self)[i]
-                }
-                let chans = Int(asbd.mChannelsPerFrame)
-                return buffers[0].mData!.assumingMemoryBound(to: Float.self)[i * chans + min(ch, chans - 1)]
-            }
-            for i in 0..<frames {
-                for ch in 0..<2 {
-                    let v = max(-1, min(1, sample(ch, i)))
-                    dst[i * 2 + ch] = Int16(v * 32_767).littleEndian
-                }
-            }
+        guard isFloat, asbd.mBitsPerChannel == 32, frames > 0, buffers.count > 0 else { return nil }
+        var out = [Float](repeating: 0, count: frames * 2)
+        if nonInterleaved {
+            let l = buffers[0].mData!.assumingMemoryBound(to: Float.self)
+            let r = buffers[min(1, buffers.count - 1)].mData!.assumingMemoryBound(to: Float.self)
+            for i in 0..<frames { out[i * 2] = l[i]; out[i * 2 + 1] = r[i] }
+        } else {
+            let chans = Int(asbd.mChannelsPerFrame)
+            let p = buffers[0].mData!.assumingMemoryBound(to: Float.self)
+            for i in 0..<frames { out[i * 2] = p[i * chans]; out[i * 2 + 1] = p[i * chans + min(1, chans - 1)] }
         }
-        return AudioPacket(captureMicros: captureMicros, frames: UInt32(frames), data: out)
+        return out
     }
 }
 

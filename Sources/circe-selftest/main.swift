@@ -147,6 +147,23 @@ struct BigIntTests {
     }
 }
 
+struct AudioTests {
+    func testOpusRoundTrip() {
+        guard let enc = OpusEncoder(), let dec = OpusDecoder() else { return fail("no opus codec") }
+        // 100 ms of a 440 Hz tone.
+        var tone = [Float]()
+        for i in 0..<4_800 { let v = Float(sin(Double(i) * 2 * .pi * 440 / 48_000)) * 0.5; tone += [v, v] }
+        let packets = enc.encode(interleaved: tone)
+        expect(packets.count == 10)
+        expect(packets.allSatisfy { $0.count > 10 && $0.count < 1_500 })
+        var out = [Float]()
+        for p in packets { out += dec.decode(p) ?? [] }
+        expect(out.count >= 9_000) // first packet drops the codec's priming samples
+        let energy = out.suffix(4_000).reduce(0) { $0 + $1 * $1 } / 4_000
+        expect(energy > 0.05 && energy < 0.3) // ~0.125 for a 0.5-amplitude sine
+    }
+}
+
 // Minimal test harness (this toolchain ships without XCTest / Swift Testing macros).
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var current = ""
@@ -184,5 +201,6 @@ run("CryptoTests.testSecureEquals") { CryptoTests().testSecureEquals() }
 run("CryptoTests.testPINFormat") { CryptoTests().testPINFormat() }
 run("AddressTests.testParsing") { AddressTests().testParsing() }
 run("BigIntTests.testMontgomeryMatchesPython") { BigIntTests().testMontgomeryMatchesPython() }
+run("AudioTests.testOpusRoundTrip") { AudioTests().testOpusRoundTrip() }
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) failure(s).")
 exit(failures == 0 ? 0 : 1)
