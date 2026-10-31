@@ -124,7 +124,7 @@ func runConnect() {
 
 /// circe-cli vnc <address> | --ssh user@host [--ssh-port N] | --gcloud INSTANCE --zone Z [--project P] [--no-iap]
 ///   [--display N] [--seconds N] [--user U --password P] [--expect x,y=0xRRGGBB ...] [--tolerance N]
-///   [--resize WxH] [--expect-clipboard TEXT] [--expect-audio]
+///   [--resize WxH] [--expect-clipboard TEXT] [--expect-audio] [--expect-video] [--no-video]
 @MainActor
 func runVNC() {
     let display = value("--display").flatMap(Int.init) ?? 1
@@ -144,6 +144,7 @@ func runVNC() {
     session.clipboardSyncEnabled = false // never touch this Mac's real clipboard from tests
     session.audioMuted = true            // verify the audio stream without playing it
     session.savesCredentials = false     // and never write test passwords to the Keychain
+    if args.contains("--no-video") { session.videoStreamEnabled = false }
     let seconds = value("--seconds").flatMap(Double.init) ?? 3
     let tolerance = value("--tolerance").flatMap(Int.init) ?? 0
     var lastState: ClientState?
@@ -189,12 +190,18 @@ func runVNC() {
                 bad += 1; log("clipboard: got \(session.lastRemoteClipboard ?? "nil")")
             }
             if args.contains("--expect-audio"), !session.audioActive { bad += 1; log("audio: not playing") }
+            if args.contains("--expect-video") {
+                if case .h264 = session.videoMode {} else { bad += 1; log("video: \(session.videoMode)") }
+                if session.videoDecodeFailed { bad += 1; log("video: decoder failed") }
+                // Xvnc's pixels must stop once video is up (a few in-flight updates are fine).
+                if session.vncUpdatesDuringVideo > 5 { bad += 1; log("video: VNC still sent \(session.vncUpdatesDuringVideo) pixel updates") }
+            }
             if let minFPS = value("--min-fps").flatMap(Double.init), session.stats.fps < minFPS {
                 bad += 1; log("fps \(session.stats.fps) < \(minFPS)")
             }
-            log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ mismatches=%d", session.stats.codec,
+            log(String(format: "RESULT %@ via %@ %@ fps=%.0f audio=%@ resizable=%@ video=%d mismatches=%d", session.stats.codec,
                        session.stats.transport, session.stats.resolution, session.stats.fps,
-                       session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", bad))
+                       session.audioActive ? "yes" : "no", session.canResizeDesktop ? "yes" : "no", session.videoFramesShown, bad))
             session.disconnect()
             exit(bad == 0 ? 0 : 6)
         }

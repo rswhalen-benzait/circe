@@ -1,6 +1,6 @@
 #!/bin/bash
 # Stand-in for /usr/bin/ssh in tests: `-W host:port` -> nc; otherwise run the last argument
-# (the remote command) locally with a fake `parec` on PATH.
+# (the remote command) locally with a fake `parec` on PATH and a fake remote $HOME.
 dir="$(cd "$(dirname "$0")" && pwd)"
 target=""; prev=""; last=""
 for a in "$@"; do
@@ -14,4 +14,5 @@ if [[ -n "$target" ]]; then
   exec nc "${target%:*}" "${target##*:}"
 fi
 export PATH="$dir/fakebin:$PATH"
+export HOME="$dir/fakehome" # the remote account (holds the fake ~/.local/libexec/circe/video helper)
 exec /bin/sh -c "$last"

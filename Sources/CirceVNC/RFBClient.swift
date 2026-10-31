@@ -44,6 +44,11 @@ final class RFBClient: @unchecked Sendable {
     // removing one network round trip per frame (big over the internet).
     private var continuousUpdates = false
 
+    // While a separate video stream shows the desktop, ask VNC for a single pixel: it still carries
+    // input, clipboard, resizes and cursor shapes, but no longer spends bandwidth on pixels.
+    private let regionLock = NSLock()
+    private var pixelsSuppressed = false
+
     // Extended clipboard (UTF-8)
     private var extendedClipboard = false
     private let clipLock = NSLock()
@@ -264,8 +269,24 @@ final class RFBClient: @unchecked Sendable {
         guard let fb else { return }
         if continuousUpdates && incremental { return } // the server streams on its own
         var d = Data([3, incremental ? 1 : 0])
-        d += be16(0) + be16(0) + be16(UInt16(fb.width)) + be16(UInt16(fb.height))
+        d += updateRegion(fb)
         stream.write(d)
+    }
+
+    private func updateRegion(_ fb: RFBFramebuffer) -> Data {
+        let tiny = regionLock.withLock { pixelsSuppressed }
+        return be16(0) + be16(0) + be16(tiny ? 1 : UInt16(fb.width)) + be16(tiny ? 1 : UInt16(fb.height))
+    }
+
+    /// Stop (or resume) pixel updates; resuming fetches a full frame so the VNC image is current.
+    func setPixelsSuppressed(_ on: Bool) {
+        let changed = regionLock.withLock { () -> Bool in
+            defer { pixelsSuppressed = on }
+            return pixelsSuppressed != on
+        }
+        guard changed else { return }
+        if continuousUpdates { enableContinuousUpdates() }
+        if !on { requestUpdate(incremental: false) }
     }
 
     func sendPointer(x: Int, y: Int, buttons: UInt8) {
@@ -419,7 +440,7 @@ final class RFBClient: @unchecked Sendable {
         guard let fb else { return }
         continuousUpdates = true
         var d = Data([150, 1])
-        d += be16(0) + be16(0) + be16(UInt16(fb.width)) + be16(UInt16(fb.height))
+        d += updateRegion(fb)
         stream.write(d)
     }
 

@@ -1,4 +1,6 @@
+import CoreMedia
 import CryptoKit
+import VideoToolbox
 import Foundation
 import CirceClient
 import CirceCore
@@ -243,6 +245,148 @@ struct ZlibTests {
     }
 }
 
+struct FLVTests {
+    static func tag(_ type: UInt8, _ body: [UInt8], millis: UInt32 = 0) -> [UInt8] {
+        let n = body.count
+        let head: [UInt8] = [type, UInt8(n >> 16), UInt8(n >> 8 & 255), UInt8(n & 255),
+                             UInt8(millis >> 16 & 255), UInt8(millis >> 8 & 255), UInt8(millis & 255), UInt8(millis >> 24),
+                             0, 0, 0]
+        let total = UInt32(11 + n)
+        return head + body + [UInt8(total >> 24), UInt8(total >> 16 & 255), UInt8(total >> 8 & 255), UInt8(total & 255)]
+    }
+
+    static let sps: [UInt8] = [0x67, 0x64, 0x00, 0x1F, 0xAC]
+    static let pps: [UInt8] = [0x68, 0xEE, 0x3C, 0x80]
+    static func config(lengthSize: Int) -> [UInt8] {
+        [0x17, 0, 0, 0, 0, 1, 0x64, 0x00, 0x1F, 0xFC | UInt8(lengthSize - 1), 0xE1, 0, UInt8(sps.count)] + sps
+            + [1, 0, UInt8(pps.count)] + pps
+    }
+    static let header: [UInt8] = [0x46, 0x4C, 0x56, 1, 1, 0, 0, 0, 9, 0, 0, 0, 0]
+
+    func testSplitsTagsAcrossArbitraryChunks() throws {
+        let idr: [UInt8] = [0x17, 1, 0, 0, 0, 0, 0, 0, 3, 0x65, 0x88, 0x84]
+        let p: [UInt8] = [0x27, 1, 0, 0, 0, 0, 0, 0, 2, 0x41, 0x9A]
+        let audio = Self.tag(8, [0xAF, 1, 9, 9]) // ignored
+        let bytes = Self.header + Self.tag(9, Self.config(lengthSize: 4)) + audio
+            + Self.tag(9, idr, millis: 16) + Self.tag(9, p, millis: 0x0100_0021)
+        var d = FLVDemuxer()
+        var out: [FLVDemuxer.Output] = []
+        for b in bytes { out += try d.feed(Data([b])) } // worst case: one byte at a time
+        expect(out == [.config([Data(Self.sps), Data(Self.pps)]),
+                       .frame(keyframe: true, millis: 16, data: Data(idr.dropFirst(5))),
+                       .frame(keyframe: false, millis: 0x0100_0021, data: Data(p.dropFirst(5)))])
+        var whole = FLVDemuxer()
+        expect(try whole.feed(Data(bytes)) == out)
+    }
+
+    func testNormalizesShortNALLengths() throws {
+        let idr: [UInt8] = [0x17, 1, 0, 0, 0, 0, 3, 0x65, 0x88, 0x84, 0, 1, 0x06]
+        var d = FLVDemuxer()
+        let out = try d.feed(Data(Self.header + Self.tag(9, Self.config(lengthSize: 2)) + Self.tag(9, idr)))
+        expect(out.last == .frame(keyframe: true, millis: 0, data: Data([0, 0, 0, 3, 0x65, 0x88, 0x84, 0, 0, 0, 1, 0x06])))
+    }
+
+    func testRejectsGarbageAndOtherCodecs() {
+        var d = FLVDemuxer()
+        expectThrows { try d.feed(Data("ssh: connect to host\n".utf8)) }
+        var hevc = FLVDemuxer()
+        expectThrows { try hevc.feed(Data(Self.header + Self.tag(9, [0x1C, 0, 0, 0, 0, 1]))) }
+        var huge = FLVDemuxer()
+        expectThrows { try huge.feed(Data(Self.header + [9, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0])) }
+    }
+
+    func testFramerAttachesParameterSetsToKeyframes() throws {
+        var f = LinuxVideoFramer()
+        let early = Self.tag(9, [0x27, 1, 0, 0, 0, 0, 0, 0, 1, 0x41]) // before config: dropped
+        let idr = Self.tag(9, [0x17, 1, 0, 0, 0, 0, 0, 0, 1, 0x65], millis: 0)
+        let p = Self.tag(9, [0x27, 1, 0, 0, 0, 0, 0, 0, 1, 0x41], millis: 17)
+        let frames = try f.feed(Data(Self.header + early + Self.tag(9, Self.config(lengthSize: 4)) + idr + p))
+        expect(frames.count == 2)
+        expect(frames.first?.isKeyframe == true && frames.first?.parameterSets == [Data(Self.sps), Data(Self.pps)])
+        expect(frames.last?.isKeyframe == false && frames.last?.parameterSets.isEmpty == true)
+        expect(frames.count == 2 && frames[1].captureMicros - frames[0].captureMicros == 17_000)
+    }
+}
+
+extension FLVTests {
+    /// Real H.264 from VideoToolbox → FLV bytes → LinuxVideoFramer → hardware decode → check colours.
+    func testDecodesRealH264ThroughFLV() throws {
+        let (w, h) = (160, 96)
+        var enc: VTCompressionSession?
+        guard VTCompressionSessionCreate(allocator: nil, width: Int32(w), height: Int32(h), codecType: kCMVideoCodecType_H264,
+                                         encoderSpecification: nil, imageBufferAttributes: nil, compressedDataAllocator: nil,
+                                         outputCallback: nil, refcon: nil, compressionSessionOut: &enc) == noErr, let enc else {
+            return fail("no H.264 encoder")
+        }
+        VTSessionSetProperty(enc, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        var flv = Self.header
+        let colours: [UInt32] = [0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF] // BGRA: blue, green, red
+        for (i, c) in colours.enumerated() {
+            var pb: CVPixelBuffer?
+            CVPixelBufferCreate(nil, w, h, kCVPixelFormatType_32BGRA, nil, &pb)
+            CVPixelBufferLockBaseAddress(pb!, [])
+            let base = CVPixelBufferGetBaseAddress(pb!)!.assumingMemoryBound(to: UInt32.self)
+            for k in 0..<(CVPixelBufferGetBytesPerRow(pb!) / 4 * h) { base[k] = c }
+            CVPixelBufferUnlockBaseAddress(pb!, [])
+            VTCompressionSessionEncodeFrame(enc, imageBuffer: pb!, presentationTimeStamp: CMTime(value: CMTimeValue(i), timescale: 60),
+                                            duration: .invalid, frameProperties: nil, infoFlagsOut: nil) { _, _, sample in
+                guard let sample, let fmt = CMSampleBufferGetFormatDescription(sample) else { return }
+                if i == 0, let atoms = CMFormatDescriptionGetExtension(fmt, extensionKey: kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms) as? [String: Any],
+                   let avcC = atoms["avcC"] as? Data {
+                    flv += Self.tag(9, [0x17, 0, 0, 0, 0] + [UInt8](avcC))
+                }
+                var len = 0
+                var ptr: UnsafeMutablePointer<CChar>?
+                CMBlockBufferGetDataPointer(CMSampleBufferGetDataBuffer(sample)!, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &len, dataPointerOut: &ptr)
+                let bytes = [UInt8](UnsafeRawBufferPointer(start: ptr, count: len))
+                flv += Self.tag(9, [i == 0 ? 0x17 : 0x27, 1, 0, 0, 0] + bytes, millis: UInt32(i * 16))
+            }
+            VTCompressionSessionCompleteFrames(enc, untilPresentationTimeStamp: .invalid)
+        }
+        var framer = LinuxVideoFramer()
+        let frames = try framer.feed(Data(flv))
+        expect(frames.count == 3 && frames[0].isKeyframe)
+        guard let first = frames.first, first.parameterSets.count >= 2 else { return fail("no parameter sets") }
+        var fmt: CMVideoFormatDescription?
+        let sets = first.parameterSets
+        let status = sets[0].withUnsafeBytes { sps in sets[1].withUnsafeBytes { pps in
+            let ptrs = [sps.baseAddress!.assumingMemoryBound(to: UInt8.self), pps.baseAddress!.assumingMemoryBound(to: UInt8.self)]
+            return CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: nil, parameterSetCount: 2, parameterSetPointers: ptrs,
+                                                                       parameterSetSizes: [sets[0].count, sets[1].count],
+                                                                       nalUnitHeaderLength: 4, formatDescriptionOut: &fmt)
+        } }
+        guard status == noErr, let fmt else { return fail("format \(status)") }
+        var dec: VTDecompressionSession?
+        let attrs = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA] as CFDictionary
+        guard VTDecompressionSessionCreate(allocator: nil, formatDescription: fmt, decoderSpecification: nil,
+                                           imageBufferAttributes: attrs, outputCallback: nil, decompressionSessionOut: &dec) == noErr,
+              let dec else { return fail("no decoder") }
+        for (i, f) in frames.enumerated() {
+            var block: CMBlockBuffer?
+            let data = f.data
+            CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: data.count, blockAllocator: nil,
+                                               customBlockSource: nil, offsetToData: 0, dataLength: data.count, flags: 0, blockBufferOut: &block)
+            data.withUnsafeBytes { _ = CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block!, offsetIntoDestination: 0, dataLength: data.count) }
+            var sample: CMSampleBuffer?
+            var size = data.count
+            CMSampleBufferCreateReady(allocator: nil, dataBuffer: block, formatDescription: fmt, sampleCount: 1, sampleTimingEntryCount: 0,
+                                      sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample)
+            var got: UInt32 = 0
+            VTDecompressionSessionDecodeFrame(dec, sampleBuffer: sample!, flags: [], infoFlagsOut: nil) { st, _, image, _, _ in
+                guard st == noErr, let image else { return }
+                CVPixelBufferLockBaseAddress(image, .readOnly)
+                let row = CVPixelBufferGetBytesPerRow(image) / 4
+                got = CVPixelBufferGetBaseAddress(image)!.assumingMemoryBound(to: UInt32.self)[h / 2 * row + w / 2]
+                CVPixelBufferUnlockBaseAddress(image, .readOnly)
+            }
+            VTDecompressionSessionWaitForAsynchronousFrames(dec)
+            let want = colours[i]
+            let diff = [16, 8, 0].map { abs(Int((got >> $0) & 0xFF) - Int((want >> $0) & 0xFF)) }.max()!
+            if diff > 24 { fail(String(format: "frame %d centre %08X, wanted %08X", i, got, want)) }
+        }
+    }
+}
+
 // Minimal test harness (this toolchain ships without XCTest / Swift Testing macros).
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var current = ""
@@ -287,5 +431,10 @@ run("DatagramTests.testUnrecoverableLossIsReported") { DatagramTests().testUnrec
 run("DatagramTests.testMalformedShardsAreIgnored") { DatagramTests().testMalformedShardsAreIgnored() }
 run("DatagramTests.testCipherRoundTripAndReplay") { DatagramTests().testCipherRoundTripAndReplay() }
 run("ZlibTests.testInflatesLargePayloadsCompletely") { ZlibTests().testInflatesLargePayloadsCompletely() }
+run("FLVTests.testSplitsTagsAcrossArbitraryChunks") { try FLVTests().testSplitsTagsAcrossArbitraryChunks() }
+run("FLVTests.testNormalizesShortNALLengths") { try FLVTests().testNormalizesShortNALLengths() }
+run("FLVTests.testRejectsGarbageAndOtherCodecs") { FLVTests().testRejectsGarbageAndOtherCodecs() }
+run("FLVTests.testFramerAttachesParameterSetsToKeyframes") { try FLVTests().testFramerAttachesParameterSetsToKeyframes() }
+run("FLVTests.testDecodesRealH264ThroughFLV") { try FLVTests().testDecodesRealH264ThroughFLV() }
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) failure(s).")
 exit(failures == 0 ? 0 : 1)

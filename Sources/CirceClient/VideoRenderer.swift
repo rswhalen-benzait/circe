@@ -4,16 +4,16 @@ import CoreMedia
 import Foundation
 
 /// Hardware decode + display through AVSampleBufferDisplayLayer, presenting each frame immediately.
-final class VideoRenderer {
-    let layer = AVSampleBufferDisplayLayer()
+public final class VideoRenderer {
+    public let layer = AVSampleBufferDisplayLayer()
     private var format: CMVideoFormatDescription?
     private var codec: VideoCodec = .hevc
     private var awaitingKeyframe = true
 
     /// Called when the decoder needs a fresh keyframe (startup, error, missing parameter sets).
-    var onNeedKeyframe: (() -> Void)?
+    public var onNeedKeyframe: (() -> Void)?
 
-    init() {
+    public init() {
         layer.videoGravity = .resizeAspect
         layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         // Pixel-exact presentation: no smoothing when the stream matches the view's backing size.
@@ -23,22 +23,24 @@ final class VideoRenderer {
 
     private var renderer: AVSampleBufferVideoRenderer { layer.sampleBufferRenderer }
 
-    func reset(codec: VideoCodec) {
+    public var failed: Bool { renderer.status == .failed }
+
+    public func reset(codec: VideoCodec) {
         self.codec = codec
         format = nil
         awaitingKeyframe = true
         renderer.flush()
     }
 
-    func flush() {
+    public func flush() {
         renderer.flush(removingDisplayedImage: true, completionHandler: nil)
         awaitingKeyframe = true
     }
 
     /// Keep showing the last good image, but don't decode until the next keyframe (after loss).
-    func awaitKeyframe() { awaitingKeyframe = true }
+    public func awaitKeyframe() { awaitingKeyframe = true }
 
-    func display(_ frame: VideoFrame) {
+    public func display(_ frame: VideoFrame) {
         if frame.isKeyframe, !frame.parameterSets.isEmpty {
             format = makeFormat(frame.parameterSets)
             awaitingKeyframe = false

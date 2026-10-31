@@ -156,6 +156,8 @@ def session(c):
         while True:
             threading.Event().wait(0.05)
             if not cu["on"]: continue
+            rx, ry, rw, rh = cu.get("region", (0, 0, W, H))
+            if not (rx <= W - 1 < rx + rw and ry <= H - 1 < ry + rh): continue  # like Xvnc: only the requested region
             n += 1
             try:
                 c.sendall(bytes([0, 0]) + struct.pack(">H", 1) + rect(W - 1, H - 1, 1, 1, 7) + bytes([0x80]) + rgb(n * 1234567 & 0xFFFFFF))
@@ -189,7 +191,8 @@ def session(c):
                     raw = CLIP_TEXT.encode() + b"\0"
                     c.sendall(ext_clip(PROVIDE | TEXT, zlib.compress(struct.pack(">I", len(raw)) + raw)))
         elif t == 150:
-            enable = recv_exact(c, 9)[0]; cu["on"] = bool(enable)
+            enable, rx, ry, rw, rh = struct.unpack(">BHHHH", recv_exact(c, 9)); cu["on"] = bool(enable)
+            cu["region"] = (rx, ry, rw, rh)
             c.sendall(bytes([248, 0, 0, 0]) + struct.pack(">I", (1 << 31) | 0b11) + bytes([2]) + b"hi")  # fence request
         elif t == 248:
             recv_exact(c, 3); recv_exact(c, 4); ln = recv_exact(c, 1)[0]; recv_exact(c, ln)

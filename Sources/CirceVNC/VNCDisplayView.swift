@@ -4,6 +4,8 @@ import CirceClient
 /// Remote screen for VNC / Apple Screen Sharing servers.
 public final class VNCDisplayView: NSView {
     let imageLayer = CALayer()
+    /// Hardware-decoded video of the same desktop (Linux H.264 stream), shown over the VNC image.
+    private(set) var videoLayer: CALayer?
     var client: RFBClient?
     var isApple = false
     var framebufferSize = CGSize(width: 16, height: 10) { didSet { needsLayout = true; window?.invalidateCursorRects(for: self) } }
@@ -54,12 +56,26 @@ public final class VNCDisplayView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         imageLayer.frame = videoRect
+        videoLayer?.frame = videoRect
         CATransaction.commit()
         resizeWork?.cancel()
         let size = bounds.size
         let work = DispatchWorkItem { [weak self] in self?.onSettledResize?(size) }
         resizeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    func setVideoLayer(_ l: CALayer?) {
+        guard l !== videoLayer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        videoLayer?.removeFromSuperlayer()
+        videoLayer = l
+        if let l {
+            l.frame = videoRect
+            layer?.insertSublayer(l, above: imageLayer)
+        }
+        CATransaction.commit()
     }
 
     func show(_ fb: RFBFramebuffer) {

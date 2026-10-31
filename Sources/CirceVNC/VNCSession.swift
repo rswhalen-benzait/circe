@@ -39,6 +39,17 @@ public final class VNCSession: ObservableObject, Identifiable {
     @Published public var fitsRemoteDesktopToWindow = true { didSet { requestFit() } }
     /// The server supports resizing its desktop.
     @Published public private(set) var canResizeDesktop = false
+    /// Stream the desktop as hardware-decoded H.264 from Circe's Linux helper (SSH/IAP only), with
+    /// VNC kept for input, clipboard and cursor. Falls back to VNC pixels whenever video isn't available.
+    @Published public var videoStreamEnabled = true { didSet { updateVideo() } }
+    /// What is currently drawing the screen.
+    @Published public private(set) var videoMode: VideoMode = .vnc
+    public enum VideoMode: Equatable, Sendable {
+        case vnc
+        case starting
+        /// `encoder` as reported by the helper, e.g. "x264" or "nvenc".
+        case h264(encoder: String)
+    }
 
     public let displayView = VNCDisplayView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
 
@@ -59,6 +70,17 @@ public final class VNCSession: ObservableObject, Identifiable {
     private var reconnectAttempt = 0
     private var lastBytes: UInt64 = 0
     private var audioRetries = 0
+    private var video: VideoRenderer?
+    /// Video frames handed to the decoder this session (diagnostics / tests).
+    public private(set) var videoFramesShown = 0
+    /// VNC framebuffer updates received while video was showing (should be ~0: pixels are suppressed).
+    public private(set) var vncUpdatesDuringVideo = 0
+    public var videoDecodeFailed: Bool { video?.failed ?? false }
+    private var videoPipe: ProcessPipe?
+    private var videoRetries = 0
+    private var videoFPS = RateMeter()
+    /// Exit code the helper uses for "can't stream video here" (no ffmpeg, no X display…): don't retry.
+    static let videoUnavailableExit: Int32 = 3
     /// Remember credentials in the Keychain (off for tests / one-off connections).
     public var savesCredentials = true
 
@@ -124,7 +146,7 @@ public final class VNCSession: ObservableObject, Identifiable {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.stats.fps = self.fpsMeter.rate()
+                self.stats.fps = self.video != nil ? self.videoFPS.rate() : self.fpsMeter.rate()
                 // No client between reconnects; and a new connection's counter restarts below the old one.
                 guard let bytes = self.client?.bytesRead else { self.lastBytes = 0; return }
                 self.stats.bitrateMbps = bytes >= self.lastBytes ? Double(bytes - self.lastBytes) * 8 * 2 / 1_000_000 : 0
@@ -202,16 +224,20 @@ public final class VNCSession: ObservableObject, Identifiable {
             reconnectAttempt = 0
             updateClipboard()
             updateAudio()
+            updateVideo()
         case .canResizeDesktop:
             canResizeDesktop = true
             requestFit()
         case let .resized(w, h):
             displayView.framebufferSize = CGSize(width: w, height: h)
             stats.resolution = "\(w)×\(h)"
+            restartVideo() // the encoder captures a fixed size
         case .frameUpdated(let fb):
             fpsMeter.add()
+            if video != nil { vncUpdatesDuringVideo += 1 }
             lastFramebuffer = fb
             displayView.show(fb)
+            if video == nil { displayView.setVideoLayer(nil) } // VNC pixels are current again
         case .cursor(let c):
             displayView.setCursor(c)
         case .clipboard(let text):
@@ -235,6 +261,7 @@ public final class VNCSession: ObservableObject, Identifiable {
             if wasStreaming && !authFailure && reconnectAttempt < 6 {
                 reconnectAttempt += 1
                 stopAudio()
+                stopVideo()
                 client = nil
                 displayView.client = nil
                 state = .reconnecting(attempt: reconnectAttempt)
@@ -309,9 +336,113 @@ public final class VNCSession: ObservableObject, Identifiable {
         audioActive = false
     }
 
+    // MARK: H.264 video over SSH (Linux helper installed by setup-circe-host.sh)
+
+    /// The helper writes an H.264 FLV stream of the X display to stdout; diagnostics go to stderr.
+    func remoteVideoCommand() -> String {
+        let display: Int = {
+            switch tunnel {
+            case let .ssh(_, _, vnc), let .gcloud(_, _, _, _, vnc): return vnc - 5900
+            case .direct: return 0
+            }
+        }()
+        return "exec \"$HOME/.local/libexec/circe/video\" --display \(display) --fps 60"
+    }
+
+    private func updateVideo() {
+        guard videoStreamEnabled, state == .streaming, tunnel.isTunneled, !displayView.isApple else { stopVideo(); return }
+        guard videoPipe == nil, let (exe, args) = try? tunnel.remoteCommand(remoteVideoCommand()) else { return }
+        let pipe = ProcessPipe(executable: exe, arguments: args)
+        guard (try? pipe.start()) != nil else { return }
+        videoPipe = pipe
+        videoMode = .starting
+        let renderer = VideoRenderer()
+        renderer.reset(codec: .h264)
+        let pipeRef = pipe
+        let reader = Thread { [weak self, weak pipe] in
+            var framer = LinuxVideoFramer()
+            var started = false
+            while let pipe {
+                let chunk = pipe.read()
+                if chunk.isEmpty { break }
+                guard let frames = try? framer.feed(chunk) else { pipe.terminate(); break }
+                for f in frames {
+                    let first = !started && f.isKeyframe
+                    if first { started = true }
+                    guard started else { continue }
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            guard let self, self.videoPipe === pipeRef else { return }
+                            if first { self.videoStarted(renderer, pipe: pipeRef) }
+                            renderer.display(f)
+                            self.videoFPS.add()
+                            self.videoFramesShown += 1
+                        }
+                    }
+                }
+            }
+            pipe?.process.waitUntilExit()
+            let code = pipe?.process.terminationStatus ?? 0
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.videoPipe === pipeRef else { return }
+                    self.stopVideo()
+                    // Not installed / not possible on this machine: VNC pixels it is.
+                    guard code != Self.videoUnavailableExit && code != 127 else { return }
+                    self.videoRetries += 1
+                    guard self.videoRetries <= 5, self.state == .streaming else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.updateVideo() }
+                }
+            }
+        }
+        reader.name = "circe.vnc.video"
+        reader.qualityOfService = .userInteractive
+        reader.start()
+    }
+
+    /// First keyframe decoded: show the video and stop VNC spending bandwidth on pixels.
+    private func videoStarted(_ renderer: VideoRenderer, pipe: ProcessPipe) {
+        video = renderer
+        videoRetries = 0
+        displayView.setVideoLayer(renderer.layer)
+        client?.setPixelsSuppressed(true)
+        let encoder = Self.reportedEncoder(pipe.errorOutput) ?? "H.264"
+        videoMode = .h264(encoder: encoder)
+        stats.codec = "H.264 · \(encoder)"
+    }
+
+    /// The helper announces `CIRCE_VIDEO encoder=<name> …` on stderr.
+    static func reportedEncoder(_ stderr: String) -> String? {
+        guard let line = stderr.split(separator: "\n").last(where: { $0.hasPrefix("CIRCE_VIDEO ") }) else { return nil }
+        for field in line.split(separator: " ") where field.hasPrefix("encoder=") {
+            return String(field.dropFirst("encoder=".count))
+        }
+        return nil
+    }
+
+    private func restartVideo() {
+        guard videoPipe != nil else { return }
+        stopVideo()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.updateVideo() }
+    }
+
+    private func stopVideo() {
+        videoPipe?.terminate()
+        videoPipe = nil
+        let wasShowing = video != nil
+        video = nil
+        if videoMode != .vnc { videoMode = .vnc }
+        guard wasShowing else { return }
+        // Keep the last video image up until VNC has sent a fresh full frame (see .frameUpdated).
+        client?.setPixelsSuppressed(false)
+        if client == nil { displayView.setVideoLayer(nil) }
+        stats.codec = tunnel.isTunneled ? "VNC · Tight" : "VNC"
+    }
+
     private func finish(_ reason: String?) {
         state = .disconnected(reason: reason)
         stopAudio()
+        stopVideo()
         statsTimer?.invalidate()
         statsTimer = nil
         clipboard?.stop()
