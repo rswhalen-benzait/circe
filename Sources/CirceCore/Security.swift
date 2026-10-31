@@ -146,7 +146,9 @@ public struct SecureChannel: Sendable {
     public mutating func seal(_ plaintext: Data) throws -> Data {
         let box = try ChaChaPoly.seal(plaintext, using: keys.send, nonce: Self.nonce(sendCounter))
         sendCounter += 1
-        return box.ciphertext + box.tag
+        var out = Data(box.ciphertext)
+        out.append(box.tag)
+        return out
     }
 
     public mutating func open(_ data: Data) throws -> Data {

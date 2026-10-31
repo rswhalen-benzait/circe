@@ -16,7 +16,8 @@ let package = Package(
         .target(name: "CirceUI", dependencies: ["CirceCore", "CirceClient", "CirceHost", "CirceVNC"]),
         .executableTarget(name: "Circe", dependencies: ["CirceUI"]),
         .executableTarget(name: "circe-cli", dependencies: ["CirceCore", "CirceHost", "CirceClient"]),
-        .testTarget(name: "CirceCoreTests", dependencies: ["CirceCore", "CirceHost", "CirceClient"]),
+        // Self-test executable: this toolchain (Command Line Tools) ships without XCTest.
+        .executableTarget(name: "circe-selftest", dependencies: ["CirceCore", "CirceClient"]),
     ],
     swiftLanguageModes: [.v5]
 )

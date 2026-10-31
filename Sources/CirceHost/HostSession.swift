@@ -3,6 +3,7 @@ import CoreGraphics
 import CoreMedia
 import CryptoKit
 import Foundation
+import IOKit.pwr_mgt
 import Network
 
 /// Shared, thread-safe host policy consulted by sessions.
@@ -58,6 +59,16 @@ final class HostSession: @unchecked Sendable {
     private var pendingBuffer: (CVPixelBuffer, UInt64)?
     private var lastBuffer: (CVPixelBuffer, UInt64)?
     private let maxInFlight = 2
+
+    // Adaptive bitrate: back off when the link can't keep up, creep back when it can.
+    private var skippedFrames = 0
+    private var targetBitrate = 0
+    private var currentBitrate = 0
+    private var cleanSeconds = 0
+    private var abrTimer: DispatchSourceTimer?
+
+    // Keep the host awake and its display on while someone is using it.
+    private var powerAssertion: IOPMAssertionID = 0
 
     var onStateChange: ((HostSession) -> Void)?
     var onNeedsPIN: ((Bool) -> Void)?
@@ -202,7 +213,7 @@ final class HostSession: @unchecked Sendable {
         if needsRestart {
             startPipeline()
         } else if bitrateChanged, let enc = encoder {
-            enc.setBitrate(cfg.bitrate ?? defaultBitrate(width: enc.width, height: enc.height, fps: cfg.maxFPS, quality: cfg.quality))
+            startAdaptiveBitrate(cfg.bitrate ?? defaultBitrate(width: enc.width, height: enc.height, fps: cfg.maxFPS, quality: cfg.quality))
         }
     }
 
@@ -257,6 +268,7 @@ final class HostSession: @unchecked Sendable {
         conn.send(.streamStart(StreamStart(codec: encoder.codec, display: d, displays: [d],
                                            encodedWidth: d.pixelWidth, encodedHeight: d.pixelHeight, audio: nil,
                                            hostClockMicros: Clock.micros())))
+        startAdaptiveBitrate(defaultBitrate(width: d.pixelWidth, height: d.pixelHeight, fps: fps, quality: config.quality))
         synth.start(fps: fps)
         onStreamingStarted?(self)
     }
@@ -290,6 +302,9 @@ final class HostSession: @unchecked Sendable {
             self?.queue.async { self?.conn.close(goodbye: "Screen capture stopped: \(err?.localizedDescription ?? "")") }
         }
 
+        startAdaptiveBitrate(bitrate)
+        holdPowerAssertion()
+
         conn.send(.streamStart(StreamStart(codec: encoder.codec, display: display, displays: displays,
                                            encodedWidth: w, encodedHeight: h,
                                            audio: config.audioEnabled ? AudioPacketizer.format : nil,
@@ -297,10 +312,60 @@ final class HostSession: @unchecked Sendable {
         onStreamingStarted?(self)
     }
 
+    private func startAdaptiveBitrate(_ bitrate: Int) {
+        targetBitrate = bitrate
+        currentBitrate = bitrate
+        cleanSeconds = 0
+        encoder?.setBitrate(bitrate)
+        abrTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in self?.adaptBitrate() }
+        t.resume()
+        abrTimer = t
+    }
+
+    private func adaptBitrate() {
+        guard let encoder else { return }
+        let skipped = pipeLock.withLock { () -> Int in let s = skippedFrames; skippedFrames = 0; return s }
+        var next = currentBitrate
+        if skipped > 2 {
+            next = max(2_000_000, Int(Double(currentBitrate) * 0.7))
+            cleanSeconds = 0
+        } else {
+            cleanSeconds += 1
+            if cleanSeconds >= 3 && currentBitrate < targetBitrate {
+                next = min(targetBitrate, Int(Double(currentBitrate) * 1.15))
+            }
+        }
+        if next != currentBitrate {
+            currentBitrate = next
+            encoder.setBitrate(next)
+        }
+    }
+
+    private func holdPowerAssertion() {
+        // Wakes a sleeping display (like touching the mouse) and keeps it on for the session.
+        var activity: IOPMAssertionID = 0
+        IOPMAssertionDeclareUserActivity("Circe remote session" as CFString, kIOPMUserActiveLocal, &activity)
+        guard powerAssertion == 0 else { return }
+        IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                    IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                    "Circe remote session" as CFString, &powerAssertion)
+    }
+
+    private func releasePowerAssertion() {
+        if powerAssertion != 0 { IOPMAssertionRelease(powerAssertion); powerAssertion = 0 }
+    }
+
     private func captured(_ pb: CVPixelBuffer, _ t: UInt64) {
         let encodeNow: Bool = pipeLock.withLock {
             lastBuffer = (pb, t)
-            if inFlight >= maxInFlight { pendingBuffer = (pb, t); return false }
+            if inFlight >= maxInFlight {
+                if pendingBuffer != nil { skippedFrames += 1 }
+                pendingBuffer = (pb, t)
+                return false
+            }
             inFlight += 1
             return true
         }
@@ -331,6 +396,8 @@ final class HostSession: @unchecked Sendable {
     }
 
     private func stopPipeline() {
+        abrTimer?.cancel()
+        abrTimer = nil
         synthetic?.onVideo = nil
         synthetic?.stop()
         synthetic = nil
@@ -350,6 +417,7 @@ final class HostSession: @unchecked Sendable {
         let wasAuth = phase == .auth
         phase = .closed
         stopPipeline()
+        releasePowerAssertion()
         injector?.releaseAll()
         injector = nil
         conn.close()
