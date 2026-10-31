@@ -130,6 +130,11 @@ public final class VNCSession: ObservableObject, Identifiable {
         }
     }
 
+    /// Remember a password learned out of band (e.g. from LinuxSetup) so connecting needs no prompt.
+    public static func savePassword(_ password: String, username: String = "", for tunnel: RFBTunnel) {
+        Keychain.save(account: tunnel.keychainAccount, username: username, password: password)
+    }
+
     public func submitPassword(username: String, password: String) {
         credentials = RFBClient.Credentials(username: username, password: password)
         state = .connecting

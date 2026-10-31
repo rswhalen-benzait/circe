@@ -199,6 +199,27 @@ func runVNC() {
     vncRef = session
 }
 
+/// circe-cli linux-setup --ssh user@host | --gcloud INSTANCE --zone Z  SCRIPT [-- script args]
+@MainActor
+func runLinuxSetup() {
+    let display = value("--display").flatMap(Int.init) ?? 1
+    let tunnel: RFBTunnel
+    if let dest = value("--ssh") {
+        tunnel = .ssh(destination: dest, port: value("--ssh-port").flatMap(Int.init), vncPort: RFBTunnel.vncPort(display: display))
+    } else if let inst = value("--gcloud"), let zone = value("--zone") {
+        tunnel = .gcloud(instance: inst, zone: zone, project: value("--project"), useIAP: !args.contains("--no-iap"),
+                         vncPort: RFBTunnel.vncPort(display: display))
+    } else { log("usage: circe-cli linux-setup --ssh user@host SCRIPT"); exit(2) }
+    guard let path = value("--script"), let script = FileManager.default.contents(atPath: path) else { log("--script PATH required"); exit(2) }
+    let extra = args.firstIndex(of: "--").map { Array(args[($0 + 1)...]) } ?? []
+    LinuxSetup.run(tunnel: tunnel, script: script, arguments: extra, onOutput: { log("remote: \($0)") }) { result in
+        switch result {
+        case .success(let r): log("RESULT display=\(r.display) password=\(r.password == nil ? "none" : "<received>") audio=\(r.audio ?? false)"); exit(0)
+        case .failure(let e): log("FAILED: \(e)"); exit(7)
+        }
+    }
+}
+
 @MainActor
 func runDisplays() {
     Task {
@@ -223,6 +244,7 @@ MainActor.assumeIsolated {
     case "connect": runConnect()
     case "displays": runDisplays()
     case "vnc": runVNC()
+    case "linux-setup": runLinuxSetup()
     default:
         log("usage: circe-cli host [--open] [--port N] | connect <address> [--seconds N] [--pin CODE] [--window]")
         exit(2)

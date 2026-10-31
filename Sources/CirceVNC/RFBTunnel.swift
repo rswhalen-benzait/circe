@@ -153,6 +153,14 @@ final class ProcessPipe: @unchecked Sendable {
         writeQueue.async { [weak self] in try? self?.stdinPipe.fileHandleForWriting.write(contentsOf: d) }
     }
 
+    /// Writes `d` and then closes stdin (e.g. a script piped into `bash -s`).
+    func writeAndClose(_ d: Data) {
+        writeQueue.async { [weak self] in
+            try? self?.stdinPipe.fileHandleForWriting.write(contentsOf: d)
+            try? self?.stdinPipe.fileHandleForWriting.close()
+        }
+    }
+
     var errorOutput: String { errLock.withLock { stderrText.trimmingCharacters(in: .whitespacesAndNewlines) } }
 
     func terminate() {
@@ -183,5 +191,91 @@ final class ProcessPipe: @unchecked Sendable {
         }
         let last = stderr.split(separator: "\n").last.map(String.init) ?? ""
         return last.isEmpty ? "The tunnel closed unexpectedly." : last
+    }
+}
+
+/// Installs / repairs Circe's Linux host setup (desktop, VNC on localhost, audio) over the same tunnel
+/// Circe connects through — one click, no files to copy, nothing exposed to the internet.
+public enum LinuxSetup {
+    public struct Report: Codable, Sendable, Equatable {
+        public var display: Int
+        public var password: String?
+        public var audio: Bool?
+    }
+
+    public enum Failure: Error, CustomStringConvertible {
+        case tunnel(String)
+        case script(exitCode: Int32, lastLines: String)
+        case noResult
+
+        public var description: String {
+            switch self {
+            case .tunnel(let s): return s
+            case let .script(code, lines): return "Setup stopped (exit \(code)).\n\(lines)"
+            case .noResult: return "Setup finished but didn't report how to connect."
+            }
+        }
+    }
+
+    public static let resultMarker = "CIRCE_SETUP_RESULT "
+
+    /// Runs `script` remotely as `bash -s -- arguments`. Output lines stream to `onOutput` (main queue).
+    @discardableResult
+    public static func run(tunnel: RFBTunnel, script: Data, arguments: [String] = [],
+                           onOutput: @escaping @Sendable (String) -> Void,
+                           completion: @escaping @Sendable (Result<Report, Failure>) -> Void) -> (() -> Void)? {
+        let quoted = arguments.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
+        guard let (exe, args) = try? tunnel.remoteCommand("bash -s -- \(quoted)") else {
+            completion(.failure(.tunnel("Setup needs an SSH or Google Cloud connection.")))
+            return nil
+        }
+        let pipe = ProcessPipe(executable: exe, arguments: args)
+        do { try pipe.start() } catch {
+            completion(.failure(.tunnel("Couldn't start \(exe.lastPathComponent): \(error.localizedDescription)")))
+            return nil
+        }
+        pipe.writeAndClose(script)
+        let thread = Thread {
+            var pending = ""
+            var lines: [String] = []
+            var report: Report?
+            func emit(_ line: String) {
+                if line.hasPrefix(resultMarker),
+                   let r = try? JSONDecoder().decode(Report.self, from: Data(line.dropFirst(resultMarker.count).utf8)) {
+                    report = r
+                    return // never echo the generated password into the visible log
+                }
+                lines.append(line)
+                if lines.count > 40 { lines.removeFirst() }
+                DispatchQueue.main.async { onOutput(line) }
+            }
+            while true {
+                let chunk = pipe.read()
+                if chunk.isEmpty { break }
+                pending += String(decoding: chunk, as: UTF8.self)
+                while let nl = pending.firstIndex(of: "\n") {
+                    emit(String(pending[..<nl]))
+                    pending = String(pending[pending.index(after: nl)...])
+                }
+            }
+            if !pending.isEmpty { emit(pending) }
+            pipe.process.waitUntilExit()
+            let code = pipe.process.terminationStatus
+            let result: Result<Report, Failure>
+            if code == 0, let report {
+                result = .success(report)
+            } else if code == 255 {
+                result = .failure(.tunnel(ProcessPipe.explain(pipe.errorOutput, tunnel: tunnel)))
+            } else if code != 0 {
+                let tail = (lines.suffix(6) + [pipe.errorOutput]).filter { !$0.isEmpty }.joined(separator: "\n")
+                result = .failure(.script(exitCode: code, lastLines: tail))
+            } else {
+                result = .failure(.noResult)
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+        thread.name = "circe.linux.setup"
+        thread.start()
+        return { pipe.terminate() }
     }
 }
