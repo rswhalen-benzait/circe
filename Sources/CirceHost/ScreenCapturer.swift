@@ -72,7 +72,9 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(options.fps, 1)))
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.colorSpaceName = CGColorSpace.sRGB
-        config.queueDepth = 4
+        // Headroom: we retain the latest frame (for on-demand keyframes) plus up to two in the encoder.
+        config.queueDepth = 6
+        config.captureResolution = .best
         config.showsCursor = options.showsCursor
         config.scalesToFit = true
         config.capturesAudio = options.captureAudio

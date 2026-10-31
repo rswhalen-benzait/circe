@@ -61,6 +61,10 @@ final class VideoEncoder: @unchecked Sendable {
         set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 3600)
         set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue!)
         set(kVTCompressionPropertyKey_MaxFrameDelayCount, 0)
+        // Tag colour explicitly so the client renders exactly what the host shows.
+        set(kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2)
+        set(kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2)
+        set(kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2)
         setBitrate(bitrate)
     }
 
