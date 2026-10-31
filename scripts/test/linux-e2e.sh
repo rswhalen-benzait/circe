@@ -5,7 +5,7 @@ set -u
 cd "$(dirname "$0")/../.." || exit 1
 swift build --product circe-cli >/dev/null 2>&1 || { echo "build failed"; exit 1; }
 CLI=.build/debug/circe-cli
-TMP=$(mktemp -d); trap 'pkill -f fake_tigervnc.py; rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); trap 'pkill -f fake_tigervnc.py; rm -rf "$TMP" "${TMPDIR:-/tmp}"/circe-fake-parec-$$' EXIT
 export CIRCE_SSH_PATH=$PWD/scripts/test/fake-ssh
 python3 - "$TMP/blue.png" <<'PY'
 import struct, sys, zlib
@@ -29,6 +29,9 @@ check "ssh + VeNCrypt VncAuth" "mismatches=0" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 1 --tolerance 6 --expect-audio $(head -1 "$TMP/vnc.out")
 check "continuous updates stream without requests (fps>10)" "mismatches=0" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 3 --min-fps 10
+check "audio recovers after the remote audio stream ends" "mismatches=0" \
+  env FAKE_PAREC_EXIT_AFTER=1 FAKE_PAREC_RUN=$$ $CLI vnc --ssh t@vm --display 22 --password x --seconds 5 --expect-audio
+check "Plain auth refused without a tunnel" "unencrypted" $CLI vnc 127.0.0.1:5921
 check "wrong password is reported" "Authentication failed" $CLI vnc --ssh t@vm --display 21 --user circe --password nope
 check "ssh key refused is explained" "SSH refused the login" env FAKE_SSH_FAIL="Permission denied (publickey)." $CLI vnc --ssh t@vm --display 21
 check "missing VNC server is explained" "no VNC server is running" $CLI vnc --ssh t@vm --display 49

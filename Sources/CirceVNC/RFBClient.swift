@@ -195,7 +195,13 @@ final class RFBClient: @unchecked Sendable {
         let pick: UInt32
         if subtypes.contains(1) { pick = 1 }            // None
         else if subtypes.contains(2) { pick = 2 }       // VncAuth
-        else if subtypes.contains(256) { pick = 256 }   // Plain (user + password, e.g. PAM)
+        else if subtypes.contains(256) {                // Plain (user + password, e.g. PAM)
+            // Plain sends the account password verbatim: only allow it inside an encrypted tunnel.
+            guard stream.tunnel.isTunneled else {
+                throw RFBError.unsupported("This VNC server would receive your account password unencrypted. Connect to it through SSH or Google Cloud instead.")
+            }
+            pick = 256
+        }
         else {
             throw RFBError.unsupported("This VNC server only allows TLS logins. Set “SecurityTypes=VncAuth” (Circe's setup script does this) and connect through SSH, which encrypts the session.")
         }

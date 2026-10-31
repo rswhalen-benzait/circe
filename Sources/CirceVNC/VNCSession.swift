@@ -58,6 +58,7 @@ public final class VNCSession: ObservableObject, Identifiable {
     private var wasStreaming = false
     private var reconnectAttempt = 0
     private var lastBytes: UInt64 = 0
+    private var audioRetries = 0
     /// Remember credentials in the Keychain (off for tests / one-off connections).
     public var savesCredentials = true
 
@@ -117,6 +118,7 @@ public final class VNCSession: ObservableObject, Identifiable {
         }
         client = c
         displayView.client = c
+        lastBytes = 0 // each connection's byte counter starts from zero
         c.start()
         statsTimer?.invalidate()
         statsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -249,10 +251,9 @@ public final class VNCSession: ObservableObject, Identifiable {
     // MARK: Remote audio over SSH
 
     /// Records the default PulseAudio/PipeWire output's monitor as raw 48 kHz stereo PCM.
-    static let remoteAudioCommand = """
-        S=$(pactl info 2>/dev/null | sed -n 's/^Default Sink: //p'); \
-        exec parec --device="${S:-@DEFAULT_SINK@}.monitor" --format=s16le --rate=48000 --channels=2 --raw --latency-msec=20
-        """
+    /// `@DEFAULT_MONITOR@` is resolved by PulseAudio and PipeWire-pulse themselves (locale-independent).
+    static let remoteAudioCommand =
+        "exec parec --device=@DEFAULT_MONITOR@ --format=s16le --rate=48000 --channels=2 --raw --latency-msec=20"
 
     private func updateAudio() {
         guard remoteAudioEnabled, state == .streaming, tunnel.isTunneled else { stopAudio(); return }
@@ -265,6 +266,7 @@ public final class VNCSession: ObservableObject, Identifiable {
         guard (try? pipe.start()) != nil else { player.stop(); return }
         audio = player
         audioPipe = pipe
+        let pipeRef = pipe
         let reader = Thread { [weak self, weak pipe] in
             var carry = Data()
             var announced = false
@@ -278,10 +280,20 @@ public final class VNCSession: ObservableObject, Identifiable {
                 carry = Data(carry.dropFirst(usable))
                 if !announced {
                     announced = true
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.audioRetries = 0 } }
                     DispatchQueue.main.async { MainActor.assumeIsolated { self?.audioActive = true } }
                 }
             }
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.audioActive = false } }
+            // Stream ended (audio server restarted, channel dropped…): clear it and try again shortly.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.audioPipe === pipeRef else { return }
+                    self.stopAudio()
+                    self.audioRetries += 1
+                    guard self.audioRetries <= 5 else { return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.updateAudio() }
+                }
+            }
         }
         reader.name = "circe.vnc.audio"
         reader.qualityOfService = .userInteractive

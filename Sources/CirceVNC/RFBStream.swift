@@ -160,6 +160,9 @@ final class RFBStream: @unchecked Sendable {
 
 /// Persistent raw-deflate stream for ZRLE (one zlib stream for the whole connection).
 final class ZlibStream {
+    /// Largest legitimate output for one message (an 8K raw rectangle is ~100 MB).
+    static let maxOutput = 128 << 20
+
     private var stream = compression_stream(dst_ptr: UnsafeMutablePointer<UInt8>(bitPattern: 1)!, dst_size: 0,
                                             src_ptr: UnsafePointer<UInt8>(bitPattern: 1)!, src_size: 0, state: nil)
     private var initialized = false
@@ -187,15 +190,20 @@ final class ZlibStream {
         try src.withUnsafeBytes { (s: UnsafeRawBufferPointer) in
             stream.src_ptr = s.bindMemory(to: UInt8.self).baseAddress ?? UnsafePointer<UInt8>(bitPattern: 1)!
             stream.src_size = s.count
+            // Keep calling until all input is consumed AND the decoder stops producing output:
+            // it can hold decoded bytes back between calls, even after the input is used up.
+            var produced = 0
             repeat {
                 try dst.withUnsafeMutableBufferPointer { d in
                     stream.dst_ptr = d.baseAddress!
                     stream.dst_size = chunk
                     let st = compression_stream_process(&stream, 0)
                     guard st != COMPRESSION_STATUS_ERROR else { throw RFBError.protocolError("zlib data") }
-                    out.append(d.baseAddress!, count: chunk - stream.dst_size)
+                    produced = chunk - stream.dst_size
+                    out.append(d.baseAddress!, count: produced)
+                    guard out.count <= Self.maxOutput else { throw RFBError.protocolError("zlib output too large") }
                 }
-            } while stream.src_size > 0 || stream.dst_size == 0
+            } while stream.src_size > 0 || produced > 0
         }
         return out
     }

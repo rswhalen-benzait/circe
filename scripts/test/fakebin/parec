@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 # Fake PulseAudio recorder: 440 Hz tone, s16le 48 kHz stereo, paced in real time.
-import math, struct, sys, time
+import math, os, struct, sys, time
 t0, n = time.time(), 0
+# FAKE_PAREC_EXIT_AFTER=N: simulate the audio server dropping after N seconds (first run only).
+flag = os.path.join(os.environ.get("TMPDIR", "/tmp"), "circe-fake-parec-" + os.environ.get("FAKE_PAREC_RUN", "x"))
+limit = float(os.environ.get("FAKE_PAREC_EXIT_AFTER", "0"))
+if limit and os.path.exists(flag): limit = 0
+if limit: open(flag, "w").close()
 while True:
+    if limit and time.time() - t0 > limit: sys.exit(0)
     frames = 480
     buf = b"".join(struct.pack("<hh", v, v) for v in (int(8000 * math.sin(2 * math.pi * 440 * (n + i) / 48000)) for i in range(frames)))
     sys.stdout.buffer.write(buf); sys.stdout.buffer.flush()

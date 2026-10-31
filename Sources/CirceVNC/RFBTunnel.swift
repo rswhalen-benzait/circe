@@ -130,7 +130,11 @@ final class ProcessPipe: @unchecked Sendable {
     private var stderrText = ""
     private let writeQueue = DispatchQueue(label: "circe.vnc.tunnel.write")
 
+    /// Writing to a tunnel whose ssh/gcloud already exited must fail with EPIPE, not kill the app.
+    private static let ignoreSIGPIPE: Void = { signal(SIGPIPE, SIG_IGN) }()
+
     init(executable: URL, arguments: [String]) {
+        _ = Self.ignoreSIGPIPE
         process.executableURL = executable
         process.arguments = arguments
         process.environment = GCloud.environment

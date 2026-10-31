@@ -228,6 +228,21 @@ struct DatagramTests {
     }
 }
 
+struct ZlibTests {
+    func testInflatesLargePayloadsCompletely() {
+        // Mixed-entropy 1 MiB: must come back whole (regression: output was cut at 128 KiB).
+        var seed: UInt64 = 42
+        let payload = Data((0..<(1 << 20)).map { i -> UInt8 in
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return i % 3 == 0 ? UInt8(truncatingIfNeeded: seed >> 56) : UInt8(i % 7)
+        })
+        let out = try? ZlibStream().inflate(zlibCompress(payload))
+        expect(out == payload)
+        let text = Data("Grüße ✓".utf8)
+        expect((try? ZlibStream().inflate(zlibCompress(text))) == text)
+    }
+}
+
 // Minimal test harness (this toolchain ships without XCTest / Swift Testing macros).
 nonisolated(unsafe) var failures = 0
 nonisolated(unsafe) var current = ""
@@ -271,5 +286,6 @@ run("DatagramTests.testRepairsOneLossPerGroup") { DatagramTests().testRepairsOne
 run("DatagramTests.testUnrecoverableLossIsReported") { DatagramTests().testUnrecoverableLossIsReported() }
 run("DatagramTests.testMalformedShardsAreIgnored") { DatagramTests().testMalformedShardsAreIgnored() }
 run("DatagramTests.testCipherRoundTripAndReplay") { DatagramTests().testCipherRoundTripAndReplay() }
+run("ZlibTests.testInflatesLargePayloadsCompletely") { ZlibTests().testInflatesLargePayloadsCompletely() }
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) failure(s).")
 exit(failures == 0 ? 0 : 1)
