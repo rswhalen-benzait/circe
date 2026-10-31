@@ -32,8 +32,8 @@ check "continuous updates stream without requests (fps>10)" "mismatches=0" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 3 --min-fps 10
 check "audio recovers after the remote audio stream ends" "mismatches=0" \
   env FAKE_PAREC_EXIT_AFTER=1 FAKE_PAREC_RUN=$$ $CLI vnc --ssh t@vm --display 22 --password x --seconds 5 --expect-audio
-check "H.264 video replaces VNC pixels (60 fps, VNC quiet)" "mismatches=0" \
-  env FAKE_VIDEO_FLV="$TMP/desk.flv" $CLI vnc --ssh t@vm --display 22 --password x --seconds 3 --expect-video --min-fps 45 --expect-audio
+check "H.264 video replaces VNC pixels (60 fps, VNC quiet), survives a resize" "mismatches=0" \
+  env FAKE_VIDEO_FLV="$TMP/desk.flv" $CLI vnc --ssh t@vm --display 22 --password x --seconds 3 --expect-video --min-fps 45 --expect-audio --resize 1024x640
 check "no video helper on the VM falls back to VNC" "VNC · Tight" \
   $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --min-fps 10
 check "video recovers after the stream dies" "mismatches=0" \

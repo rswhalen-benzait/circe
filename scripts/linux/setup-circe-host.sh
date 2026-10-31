@@ -73,7 +73,7 @@ as_user() {
     else runuser -u "$TARGET_USER" -- "${environment[@]}" "$@"; fi
 }
 report_status() {
-    local failed=0 listeners address found=0
+    local failed=0 listeners address found=0 check_video="${1:-true}"
     printf 'Circe desktop for %s — display :%s, TCP %s\n' "$TARGET_USER" "$DISPLAY_NUMBER" "$VNC_PORT"
     if [[ -s "$PASSWORD_FILE" ]]; then printf '  Password: configured (never printed by --check)\n'
     else printf '  Password: missing\n'; failed=1; fi
@@ -98,6 +98,7 @@ report_status() {
     else printf '  VNC listener: cannot verify (ss missing)\n'; failed=1; fi
     if as_user pactl list short sources 2>/dev/null | awk '{ print $2 }' | grep -qx 'circe.monitor'; then printf '  Audio: circe.monitor ready (48 kHz stereo)\n'
     else printf '  Audio: circe.monitor missing\n'; failed=1; fi
+    if ! $check_video; then return "$failed"; fi
     if [[ -x "$LIBEXEC/video" ]]; then
         local video_config
         if video_config="$(as_user "$LIBEXEC/video" --check --display "$DISPLAY_NUMBER" 2>/dev/null)"; then printf '  Video: available %s\n' "$video_config"
@@ -433,7 +434,7 @@ as_user systemctl --user enable circe-audio.service circe-desktop.service
 as_user systemctl --user restart circe-audio.service circe-desktop.service
 READY=false
 for ((attempt=0; attempt<30; attempt++)); do
-    if report_status >/dev/null 2>&1; then READY=true; break; fi
+    if report_status false >/dev/null 2>&1; then READY=true; break; fi
     sleep 1
 done
 if ! $READY; then
