@@ -54,6 +54,8 @@ public final class ClientSession: ObservableObject, Identifiable {
     private var wasStreaming = false
     private var clipboard: ClipboardSync?
     private var statsTimer: Timer?
+    private var hasFocus = false
+    private var pendingClipboard: ClipboardPayload?
 
     public init(endpoint: NWEndpoint, name: String, config: StreamConfig = StreamConfig(),
                 identity: DeviceIdentity = .loadOrCreate(), trust: TrustStore = TrustStore(name: "trusted-hosts.json")) {
@@ -66,6 +68,14 @@ public final class ClientSession: ObservableObject, Identifiable {
         displayView.localCursor = config.localCursor
         displayView.onSettledResize = { [weak self] size in self?.sendViewport(size) }
         displayView.onDropFiles = { [weak self] urls in self?.sendFiles(urls) }
+        displayView.onFocusChange = { [weak self] focused in
+            guard let self else { return }
+            self.hasFocus = focused
+            if focused, let p = self.pendingClipboard, self.clipboardSyncEnabled, self.state == .streaming {
+                self.pendingClipboard = nil
+                self.link.send(.clipboard(p))
+            }
+        }
         displayView.onVisibilityChange = { [weak self] visible in
             guard let self, self.config.videoPaused != !visible else { return }
             self.update { $0.videoPaused = !visible }
@@ -202,7 +212,12 @@ public final class ClientSession: ObservableObject, Identifiable {
         if clipboardSyncEnabled && state == .streaming {
             guard clipboard == nil else { return }
             let c = ClipboardSync()
-            c.onLocalChange = { [weak self] p in self?.link.send(.clipboard(p)) }
+            // Only hand our clipboard to the remote Mac while the user is working in it,
+            // so copying a password elsewhere doesn't leak it. Latest copy is sent on focus.
+            c.onLocalChange = { [weak self] p in
+                guard let self else { return }
+                if self.hasFocus { self.link.send(.clipboard(p)) } else { self.pendingClipboard = p }
+            }
             c.start()
             clipboard = c
         } else {
