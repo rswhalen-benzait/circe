@@ -22,6 +22,12 @@ and connects. SSH access must already work; automatic setup needs passwordless s
 See [Linux host setup](scripts/linux/README.md) for prerequisites, manual setup, and diagnostics.
 Per-computer keyboard mapping, audio, and desktop resizing are in Settings → Computers.
 
+On a Linux computer, ⌘ acts as Control by default, so ⌘C, ⌘V and ⌘T do what your fingers expect.
+The remote desktop resizes to your window, sound plays through a second SSH channel, the clipboard
+carries full Unicode text, and dropped connections (Wi-Fi blips, VM restarts) reconnect on their own.
+Nothing is exposed to the internet: VNC listens on the VM's localhost only and travels inside SSH,
+optionally through Google's Identity-Aware Proxy, so the VM needs no public IP or firewall hole.
+
 **While connected:**
 - Every key goes to the remote Mac, including ⌘-Tab, ⌘-Space, ⌘-Q and Mission Control
   (grant Circe *Accessibility* on this Mac for the system-wide shortcuts).
@@ -70,6 +76,8 @@ On this development Mac, loopback measured about 6 ms from capture to receive at
   dropped after 2 minutes.
 - Received files keep only their file name (no paths) and land in Downloads.
 - VNC / Screen Sharing passwords are saved in the macOS Keychain.
+- Linux / cloud connections run inside SSH (your keys or ssh-agent; host keys pinned on first use)
+  or Google Cloud IAP. Circe refuses VNC logins that would send an account password unencrypted.
 
 ## Building
 
@@ -102,6 +110,10 @@ End-to-end without Screen Recording permission, using generated frames:
 
 python3 scripts/test/fake_rfb_server.py 5999 > /tmp/expect &   # VNC decoder fixture
 .build/debug/circe-cli vnc 127.0.0.1:5999 $(head -1 /tmp/expect)
+
+scripts/test/linux-e2e.sh    # Linux/cloud path: fake ssh + fake TigerVNC + fake PulseAudio
+.build/debug/circe-cli vnc --gcloud INSTANCE --zone ZONE [--project P]   # a real GCP VM
+.build/debug/circe-cli linux-setup --gcloud INSTANCE --zone ZONE --script scripts/linux/setup-circe-host.sh
 ```
 
 ## Layout
@@ -111,11 +123,17 @@ python3 scripts/test/fake_rfb_server.py 5999 > /tmp/expect &   # VNC decoder fix
 | `CirceCore` | Wire protocol, handshake/crypto, framed TCP, UDP datagrams + FEC, Opus, clipboard |
 | `CirceHost` | Sharing service: capture, encode, input injection, cursor, display modes, file receive |
 | `CirceClient` | Sessions: discovery, decode/display, input capture, audio playback, reconnect |
-| `CirceVNC` | RFB 3.8 client: VNC + Apple Remote Desktop auth, ZRLE/Hextile/CopyRect/Raw |
+| `CirceVNC` | RFB client: VNC/ARD/VeNCrypt auth; Tight+JPEG/ZRLE/Hextile; continuous updates; resize; UTF-8 clipboard; SSH / IAP tunnels; audio over SSH; one-click Linux setup |
 | `CirceUI`, `Circe` | SwiftUI app, design system, menu bar extra, settings |
 | `circe-cli`, `circe-selftest` | Test harnesses |
 
 ## Not done yet
+
+- Linux machines stream through VNC (Tight/JPEG), not Circe's native HEVC/UDP pipeline, so motion
+  is smoother Mac to Mac. A native Linux host would need its own capture/encode service.
+- The Linux path hasn't been run against a real GCP VM yet. It's covered by fixtures that mimic
+  ssh, TigerVNC and PulseAudio, and the gcloud error handling was checked against a live (expired)
+  login. Run `scripts/test/linux-e2e.sh`, then try a real VM.
 
 - Microphone forwarding to the remote Mac (it needs a virtual audio device on the host).
 - Connecting through NAT without a VPN (use Tailscale or similar for now).
