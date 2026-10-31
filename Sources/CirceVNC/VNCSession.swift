@@ -125,8 +125,9 @@ public final class VNCSession: ObservableObject, Identifiable {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.stats.fps = self.fpsMeter.rate()
-                let bytes = self.client?.bytesRead ?? 0
-                self.stats.bitrateMbps = Double(bytes &- self.lastBytes) * 8 * 2 / 1_000_000
+                // No client between reconnects; and a new connection's counter restarts below the old one.
+                guard let bytes = self.client?.bytesRead else { self.lastBytes = 0; return }
+                self.stats.bitrateMbps = bytes >= self.lastBytes ? Double(bytes - self.lastBytes) * 8 * 2 / 1_000_000 : 0
                 self.lastBytes = bytes
             }
         }
