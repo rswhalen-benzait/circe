@@ -54,6 +54,12 @@ public final class HostService: ObservableObject {
         self.serviceName = serviceName
     }
 
+    /// Stream generated test frames instead of the screen (tests / no Screen Recording permission).
+    public var syntheticCapture: Bool {
+        get { policy.syntheticCapture }
+        set { policy.syntheticCapture = newValue }
+    }
+
     public func start() {
         guard listener == nil else { return }
         lastError = nil

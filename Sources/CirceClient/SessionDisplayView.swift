@@ -125,9 +125,43 @@ public final class SessionDisplayView: NSView {
         onFocusChange?(focused)
     }
 
+    /// Keys go remote only while the remote screen itself has focus (not a toolbar field or pairing sheet).
+    private var hasInputFocus: Bool {
+        (window?.isKeyWindow ?? false) && NSApp.isActive && window?.firstResponder === self
+    }
+
+    public override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        DispatchQueue.main.async { [weak self] in self?.updateKeyboardCapture() }
+        return ok
+    }
+
+    public override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        onInput?(.releaseAll)
+        pressedKeys.removeAll()
+        DispatchQueue.main.async { [weak self] in self?.updateKeyboardCapture() }
+        return ok
+    }
+
+    /// Hand the keyboard and mouse back to this Mac (e.g. ⌃⌥⌘-Esc or a toolbar control).
+    /// Clicking the remote screen captures again.
+    public func releaseInput() {
+        if window?.firstResponder === self { window?.makeFirstResponder(nil) }
+        onInput?(.releaseAll)
+        pressedKeys.removeAll()
+        stopKeyboardCapture()
+    }
+
+    /// Give the remote screen keyboard focus.
+    public func captureInput() {
+        window?.makeFirstResponder(self)
+    }
+
+    public var hasKeyboardFocus: Bool { hasInputFocus }
+
     private func updateKeyboardCapture() {
-        let focused = (window?.isKeyWindow ?? false) && NSApp.isActive
-        if focused && capturesSystemShortcuts {
+        if hasInputFocus && capturesSystemShortcuts {
             if keyboardCapture == nil {
                 keyboardCapture = KeyboardCapture { [weak self] e in self?.forward(cgEvent: e) }
             }

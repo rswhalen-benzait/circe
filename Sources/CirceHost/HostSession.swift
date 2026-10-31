@@ -10,6 +10,7 @@ final class HostPolicy: @unchecked Sendable {
     let identity: DeviceIdentity
     let trust: TrustStore
     let allowUnauthenticated: Bool
+    var syntheticCapture = false
     private let lock = NSLock()
     private var _pin: String?
     private var _allowPassword = true
@@ -205,12 +206,18 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    private var synthetic: SyntheticCapturer?
+
     private func startPipeline() {
         guard !startingPipeline else { return }
         startingPipeline = true
         stopPipeline()
         let cfg = config
         let fps = max(15, min(cfg.maxFPS, 120))
+        if policy.syntheticCapture {
+            startSynthetic(fps: fps)
+            return
+        }
         let capturer = ScreenCapturer()
         let opts = ScreenCapturer.Options(displayID: cfg.displayID, fps: fps, showsCursor: !cfg.localCursor,
                                           captureAudio: cfg.audioEnabled,
@@ -229,6 +236,29 @@ final class HostSession: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private func startSynthetic(fps: Int) {
+        startingPipeline = false
+        let synth = SyntheticCapturer()
+        let d = synth.display
+        guard let encoder = VideoEncoder(width: d.pixelWidth, height: d.pixelHeight, fps: fps,
+                                         bitrate: defaultBitrate(width: d.pixelWidth, height: d.pixelHeight, fps: fps, quality: config.quality),
+                                         preferred: config.codecs) else {
+            conn.close(goodbye: "No hardware video encoder available"); return
+        }
+        self.encoder = encoder
+        self.synthetic = synth
+        encoder.onFrame = { [weak self] frame in
+            guard let self else { return }
+            self.queue.async { self.conn.send(.video(frame)) { [weak self] _ in self?.frameSent() } }
+        }
+        synth.onVideo = { [weak self] pb, t in self?.captured(pb, t) }
+        conn.send(.streamStart(StreamStart(codec: encoder.codec, display: d, displays: [d],
+                                           encodedWidth: d.pixelWidth, encodedHeight: d.pixelHeight, audio: nil,
+                                           hostClockMicros: Clock.micros())))
+        synth.start(fps: fps)
+        onStreamingStarted?(self)
     }
 
     private func pipelineStarted(_ capturer: ScreenCapturer, displays: [DisplayDescriptor], fps: Int) {
@@ -301,6 +331,9 @@ final class HostSession: @unchecked Sendable {
     }
 
     private func stopPipeline() {
+        synthetic?.onVideo = nil
+        synthetic?.stop()
+        synthetic = nil
         capturer?.onVideo = nil
         capturer?.onAudio = nil
         capturer?.onStop = nil

@@ -127,3 +127,56 @@ enum NSScreenList {
         return ids.prefix(Int(count)).map { Screen(id: $0, name: "Display \($0)") }
     }
 }
+
+/// Generates animated frames without ScreenCaptureKit — exercises encode → network → decode
+/// in tests and on machines without Screen Recording permission.
+final class SyntheticCapturer: @unchecked Sendable {
+    private var timer: DispatchSourceTimer?
+    private let queue = DispatchQueue(label: "circe.capture.synthetic", qos: .userInteractive)
+    private var pool: CVPixelBufferPool?
+    private var tick = 0
+    let display: DisplayDescriptor
+    var onVideo: ((CVPixelBuffer, UInt64) -> Void)?
+
+    init(width: Int = 1920, height: Int = 1080) {
+        display = DisplayDescriptor(displayID: CGMainDisplayID(), name: "Synthetic", pixelWidth: width, pixelHeight: height,
+                                    pointWidth: Double(width) / 2, pointHeight: Double(height) / 2, refreshRate: 60)
+        let attrs: [CFString: Any] = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                      kCVPixelBufferWidthKey: width, kCVPixelBufferHeightKey: height,
+                                      kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
+        CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool)
+    }
+
+    func start(fps: Int) {
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now(), repeating: 1.0 / Double(max(fps, 1)))
+        t.setEventHandler { [weak self] in self?.emit() }
+        t.resume()
+        timer = t
+    }
+
+    func stop() { timer?.cancel(); timer = nil }
+
+    private func emit() {
+        guard let pool else { return }
+        var pb: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
+        guard let pb else { return }
+        tick += 1
+        CVPixelBufferLockBaseAddress(pb, [])
+        let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+        let y = CVPixelBufferGetBaseAddressOfPlane(pb, 0)!.assumingMemoryBound(to: UInt8.self)
+        let bar = (tick * 8) % w
+        for row in 0..<h {
+            let line = y + row * stride
+            memset(line, Int32(16 + (row / 6) % 200), w)
+            memset(line + bar, 235, min(40, w - bar))
+        }
+        let uvStride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1)
+        let uv = CVPixelBufferGetBaseAddressOfPlane(pb, 1)!.assumingMemoryBound(to: UInt8.self)
+        memset(uv, 128, uvStride * CVPixelBufferGetHeightOfPlane(pb, 1))
+        CVPixelBufferUnlockBaseAddress(pb, [])
+        onVideo?(pb, Clock.micros())
+    }
+}

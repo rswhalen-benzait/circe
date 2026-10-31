@@ -117,6 +117,10 @@ public final class ClientSession: ObservableObject, Identifiable {
         set { displayView.capturesSystemShortcuts = newValue }
     }
 
+    /// Return keyboard/mouse to this Mac; clicking the remote screen captures again.
+    public func releaseInput() { displayView.releaseInput() }
+    public func captureInput() { displayView.captureInput() }
+
     /// Ask the host for a fresh full frame (e.g. after visual corruption).
     public func refresh() { link.send(.requestKeyframe) }
 
