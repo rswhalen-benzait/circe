@@ -107,7 +107,7 @@ public struct LauncherView: View {
             if let error = addressError {
                 Text(error).font(.system(size: 11)).foregroundStyle(.red).accessibilityLabel("Address error: \(error)")
             } else {
-                Text("Use a Mac’s name, an IP address, or a host:port.")
+                Text("Use a hostname, IP address, or vnc://host for Screen Sharing.")
                     .font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
             }
         }

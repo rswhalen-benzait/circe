@@ -52,7 +52,7 @@ metadata = {
     "NSAudioCaptureUsageDescription": "Circe shares this Mac’s system audio with computers you pair and allow to connect.",
     "NSMicrophoneUsageDescription": "Circe uses microphone access when you choose to share microphone audio with a paired computer.",
     "NSLocalNetworkUsageDescription": "Circe finds your nearby Macs and connects to computers on your local network.",
-    "NSBonjourServices": ["_circe._tcp"],
+    "NSBonjourServices": ["_circe._tcp", "_rfb._tcp"],
     "NSPrincipalClass": "NSApplication",
 }
 with open(sys.argv[1], "wb") as output:

@@ -3,6 +3,7 @@ import AppKit
 import CirceClient
 import CirceCore
 import CirceHost
+import CirceVNC
 import Combine
 import Network
 
@@ -13,9 +14,11 @@ public final class CirceRuntime: ObservableObject {
     public let model: CirceModel
     private let browser: HostBrowser
     private let host: HostService
+    private let screenSharingBrowser = ScreenSharingBrowser()
     private var observations = Set<AnyCancellable>()
     private var discovered: [String: DiscoveredHost] = [:]
-    private var connections: [UUID: NativeSessionBinding] = [:]
+    private var screenSharingHosts: [String: ScreenSharingBrowser.Host] = [:]
+    private var connections: [UUID: AnyObject] = [:]
 
     public init() {
         model = CirceModel()
@@ -31,22 +34,28 @@ public final class CirceRuntime: ObservableObject {
         model.onCloseSession = { [weak self] id in self?.connections.removeValue(forKey: id) }
         refreshPermissions()
         browser.start()
+        screenSharingBrowser.start()
     }
 
     private func makeSession(host: NearbyMac?, address: String) -> RemoteSession {
         let presentation = RemoteSession(name: host?.name ?? address, address: address)
         do {
+            if let host, host.transport == .vnc, let found = screenSharingHosts[host.id] {
+                let engine = VNCSession(endpoint: found.endpoint, name: found.name)
+                connectVNC(engine, presentation: presentation)
+                return presentation
+            }
             let engine: ClientSession
             let config = StreamConfig(audioEnabled: model.preferences.audio)
             if let host, let found = discovered[host.id] {
                 engine = ClientSession(host: found, config: config)
             } else {
                 let parsed = try ConnectionAddress(address)
-                guard parsed.connectionProtocol == .circe else {
-                    presentation.phase = .disconnected("VNC compatibility is coming in the next milestone. Connect to a Mac running Circe for now.")
+                let endpoint = NWEndpoint.hostPort(host: .init(parsed.host), port: .init(rawValue: parsed.port)!)
+                if parsed.connectionProtocol == .vnc {
+                    connectVNC(VNCSession(endpoint: endpoint, name: parsed.host), presentation: presentation)
                     return presentation
                 }
-                let endpoint = NWEndpoint.hostPort(host: .init(parsed.host), port: .init(rawValue: parsed.port)!)
                 engine = ClientSession(endpoint: endpoint, name: parsed.host, config: config)
             }
             engine.clipboardSyncEnabled = model.preferences.clipboard
@@ -62,10 +71,35 @@ public final class CirceRuntime: ObservableObject {
         browser.$hosts.sink { [weak self] hosts in
             guard let self else { return }
             self.discovered = Dictionary(hosts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            self.model.hosts = hosts.map { NearbyMac(id: $0.id, name: $0.name, model: $0.modelIdentifier, address: $0.endpoint.debugDescription) }
+            self.publishHosts()
         }.store(in: &observations)
         browser.$error.sink { [weak self] in self?.model.discoveryError = $0 }.store(in: &observations)
-        model.onRefreshDiscovery = { [weak self] in self?.browser.restart() }
+        screenSharingBrowser.$hosts.sink { [weak self] hosts in
+            guard let self else { return }
+            self.screenSharingHosts = Dictionary(hosts.map { ("vnc:\($0.id)", $0) }, uniquingKeysWith: { first, _ in first })
+            self.publishHosts()
+        }.store(in: &observations)
+        model.onRefreshDiscovery = { [weak self] in
+            self?.browser.restart()
+            self?.screenSharingBrowser.stop(); self?.screenSharingBrowser.start()
+        }
+    }
+
+    private func connectVNC(_ engine: VNCSession, presentation: RemoteSession) {
+        engine.clipboardSyncEnabled = model.preferences.clipboard
+        engine.capturesSystemShortcuts = model.preferences.captureShortcuts
+        connections[presentation.id] = VNCSessionBinding(engine: engine, presentation: presentation)
+        engine.connect()
+    }
+
+    private func publishHosts() {
+        let native = discovered.values.map { NearbyMac(id: $0.id, name: $0.name, model: $0.modelIdentifier, address: $0.endpoint.debugDescription) }
+        let nativeNames = Set(native.map { $0.name.lowercased() })
+        let compatibility = screenSharingHosts.compactMap { id, host -> NearbyMac? in
+            guard !nativeNames.contains(host.name.lowercased()) else { return nil }
+            return NearbyMac(id: id, name: host.name, model: "Mac", address: host.endpoint.debugDescription, transport: .vnc)
+        }
+        model.hosts = (native + compatibility).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private func attachHosting() {
@@ -137,6 +171,9 @@ private final class NativeSessionBinding {
         self.engine = engine; self.presentation = presentation
         presentation.displayView = engine.displayView
         presentation.controlsAvailable = true
+        presentation.scaleAvailable = true
+        presentation.clipboardAvailable = true
+        presentation.audioAvailable = true
         presentation.qualityAvailable = true
         presentation.keyboardReleaseAvailable = true
         presentation.onReleaseKeyboard = { [weak engine] in engine?.releaseInput() }
@@ -160,17 +197,8 @@ private final class NativeSessionBinding {
         }
         engine.$state.sink { [weak presentation] state in
             guard let presentation else { return }
-            switch state {
-            case .idle, .connecting: presentation.phase = .connecting
-            case .authenticating(let methods, let error):
-                presentation.allowsPIN = methods.contains(.pin)
-                presentation.allowsPassword = methods.contains(.password)
-                presentation.pinError = error
-                presentation.phase = .pairing
-            case .streaming: presentation.phase = .streaming
-            case .reconnecting(let attempt): presentation.phase = .reconnecting(attempt)
-            case .disconnected(let reason): presentation.phase = .disconnected(reason)
-            }
+            apply(state, to: presentation)
+
         }.store(in: &observations)
         engine.$hostName.sink { [weak presentation] in presentation?.name = $0 }.store(in: &observations)
         engine.$stats.sink { [weak presentation] stats in
@@ -186,4 +214,53 @@ private final class NativeSessionBinding {
         }.store(in: &observations)
     }
 }
+@MainActor
+private final class VNCSessionBinding {
+    let engine: VNCSession
+    let presentation: RemoteSession
+    private var observations = Set<AnyCancellable>()
+    init(engine: VNCSession, presentation: RemoteSession) {
+        self.engine = engine; self.presentation = presentation
+        presentation.displayView = engine.displayView
+        presentation.controlsAvailable = true
+        presentation.scaleAvailable = true
+        presentation.clipboardAvailable = true
+        presentation.audioAvailable = false
+        presentation.audioEnabled = false
+        presentation.keyboardReleaseAvailable = true
+        presentation.clipboardEnabled = engine.clipboardSyncEnabled
+        presentation.onReleaseKeyboard = { [weak engine] in engine?.releaseInput() }
+        presentation.onPassword = { [weak engine] username, password in engine?.submitPassword(username: username, password: password) }
+        presentation.onDisconnect = { [weak engine] in engine?.disconnect() }
+        presentation.onReconnect = { [weak engine] in engine?.connect() }
+        presentation.onClipboard = { [weak engine] in engine?.clipboardSyncEnabled = $0 }
+        engine.$needsUsername.sink { [weak presentation] in presentation?.requiresUsername = $0 }.store(in: &observations)
+        engine.$hostName.sink { [weak presentation] in presentation?.name = $0 }.store(in: &observations)
+        engine.$state.sink { [weak presentation] state in
+            guard let presentation else { return }
+            apply(state, to: presentation)
+        }.store(in: &observations)
+        engine.$stats.sink { [weak presentation] stats in
+            presentation?.fps = stats.fps; presentation?.latencyMs = stats.latencyMs; presentation?.bitrateMbps = stats.bitrateMbps
+            let size = stats.resolution.split(separator: "×").compactMap { Double($0) }
+            if size.count == 2, size[0] > 0, size[1] > 0 { presentation?.remotePixelSize = CGSize(width: size[0], height: size[1]) }
+        }.store(in: &observations)
+    }
+}
+
+@MainActor
+private func apply(_ state: ClientState, to presentation: RemoteSession) {
+    switch state {
+    case .idle, .connecting: presentation.phase = .connecting
+    case .authenticating(let methods, let error):
+        presentation.allowsPIN = methods.contains(.pin)
+        presentation.allowsPassword = methods.contains(.password)
+        presentation.pinError = error
+        presentation.phase = .pairing
+    case .streaming: presentation.phase = .streaming
+    case .reconnecting(let attempt): presentation.phase = .reconnecting(attempt)
+    case .disconnected(let reason): presentation.phase = .disconnected(reason)
+    }
+}
+
 #endif

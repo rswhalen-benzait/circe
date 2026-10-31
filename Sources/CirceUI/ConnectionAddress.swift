@@ -15,8 +15,10 @@ public struct ConnectionAddress: Equatable {
         var value = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty, !value.contains(where: { $0.isWhitespace || $0.isNewline }) else { throw AddressError.invalidHost }
         var scheme = ConnectionProtocol.circe
+        var explicitScheme = false
         if let separator = value.range(of: "://") {
             guard let supplied = ConnectionProtocol(rawValue: String(value[..<separator.lowerBound]).lowercased()) else { throw AddressError.invalidScheme }
+            explicitScheme = true
             scheme = supplied
             value = String(value[separator.upperBound...])
             if value.hasSuffix("/") { value.removeLast() }
@@ -53,6 +55,7 @@ public struct ConnectionAddress: Equatable {
                   let number = UInt16(supplied), number > 0 else { throw AddressError.invalidPort }
             port = number
         } else { port = scheme == .circe ? 47_800 : 5900 }
+        if !explicitScheme && port == 5900 { scheme = .vnc }
         host = parsedHost; connectionProtocol = scheme
     }
     private static func isIPv6(_ input: String) -> Bool {

@@ -1,32 +1,41 @@
 import AppKit
 import CirceUI
+import OSLog
 import SwiftUI
+
+private let lifecycleLog = Logger(subsystem: "com.circe.desktop", category: "lifecycle")
 
 @main
 struct CirceApp: App {
     @NSApplicationDelegateAdaptor(CirceAppDelegate.self) private var appDelegate
     @StateObject private var runtime = CirceRuntime()
 
-    init() { NSApplication.shared.setActivationPolicy(.regular) }
+    init() { NSApplication.shared.setActivationPolicy(.regular); lifecycleLog.info("App initialized") }
 
     var body: some Scene {
         WindowGroup("Circe", id: "launcher") {
             LauncherView(model: runtime.model)
-                .onAppear { appDelegate.onQuit = { runtime.model.shutdown() } }
+                .onAppear { lifecycleLog.info("Launcher appeared")
+                    appDelegate.onQuit = { runtime.model.shutdown() }
+                    DispatchQueue.main.async { lifecycleLog.info("Visible app windows: \(NSApp.windows.filter { $0.isVisible }.count)") } }
         }
         .defaultSize(width: 640, height: 650)
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) { ShowLauncherButton() }
-            CommandGroup(after: .windowSize) {
-                Button("Enter Full Screen") { NSApp.keyWindow?.toggleFullScreen(nil) }
-                    .keyboardShortcut("f", modifiers: [.control, .command])
-            }
-            CommandMenu("Session") {
+            CommandGroup(after: .toolbar) {
+                Button("Toggle Full Screen") { NSApp.keyWindow?.toggleFullScreen(nil) }
+                    .keyboardShortcut("f", modifiers: [.control, .option, .command])
+                Button("Show Connection Stats") { NotificationCenter.default.post(name: .circeToggleStats, object: nil) }
+                    .keyboardShortcut("s", modifiers: [.control, .option, .command])
+                Divider()
+                Button("Release Remote Input") { NotificationCenter.default.post(name: .circeReleaseInput, object: nil) }
+                    .keyboardShortcut(.escape, modifiers: [.control, .option, .command])
                 Button("Disconnect") { NotificationCenter.default.post(name: .circeDisconnectSession, object: nil) }
-                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .keyboardShortcut("d", modifiers: [.control, .option, .command])
             }
+
         }
 
         WindowGroup(for: UUID.self) { $sessionID in
@@ -59,7 +68,7 @@ private struct ShowLauncherButton: View {
 @MainActor
 final class CirceAppDelegate: NSObject, NSApplicationDelegate {
     var onQuit: (() -> Void)?
-    func applicationDidFinishLaunching(_ notification: Notification) { NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true) }
+    func applicationDidFinishLaunching(_ notification: Notification) { NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true); lifecycleLog.info("Application launched with \(NSApp.windows.count) windows") }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { onQuit?() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

@@ -7,7 +7,8 @@ struct PairingView: View {
     @CirceViewState<String> private var password = ""
     @CirceViewState<Bool> private var usePassword = false
     @CirceViewState<Bool> private var submitted = false
-    @FocusState private var focused: Bool
+    private enum Field: Hashable { case pin, username, password }
+    @FocusState private var focused: Field?
     var body: some View {
         VStack(spacing: 23) {
             ZStack {
@@ -16,7 +17,7 @@ struct PairingView: View {
             }
             VStack(spacing: 9) {
                 Text("A little introduction.").font(.system(size: 29, weight: .regular, design: .serif)).tracking(-0.6)
-                Text(usePassword ? "Sign in with a Mac account on\n\(session.name)." : "Enter the six-digit code shown in Circe on\n\(session.name).")
+                Text(usePassword ? (session.requiresUsername ? "Sign in with a Mac account on\n\(session.name)." : "Enter the VNC password for\n\(session.name).") : "Enter the six-digit code shown in Circe on\n\(session.name).")
                     .font(.system(size: 13)).foregroundStyle(CirceStyle.secondaryInk).multilineTextAlignment(.center).lineSpacing(4)
             }
             if usePassword { accountFields } else { pinFields }
@@ -31,7 +32,7 @@ struct PairingView: View {
             }.buttonStyle(PrimaryButtonStyle()).disabled(!valid || submitted).keyboardShortcut(.defaultAction)
             if session.allowsPIN && session.allowsPassword {
                 Button(usePassword ? "Use a pairing code instead" : "Use a Mac account instead") {
-                    usePassword.toggle(); password = ""; pin = ""; submitted = false; focused = true
+                    usePassword.toggle(); password = ""; pin = ""; submitted = false; focusInput()
                 }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(CirceStyle.violet)
             } else {
                 Text("You’ll only need to do this once.").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
@@ -39,9 +40,9 @@ struct PairingView: View {
             Button("Cancel") { password = ""; session.disconnect() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(CirceStyle.secondaryInk)
         }.padding(42).frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(CirceStyle.paper).foregroundStyle(CirceStyle.ink).preferredColorScheme(.light)
-            .onAppear { usePassword = !session.allowsPIN && session.allowsPassword; focused = true }
+            .onAppear { usePassword = !session.allowsPIN && session.allowsPassword; focusInput() }
             .onDisappear { password = "" }
-            .onChange(of: session.pinError) { _, value in if value != nil { submitted = false; focused = true } }
+            .onChange(of: session.pinError) { _, value in if value != nil { submitted = false; focusInput() } }
     }
     private var pinFields: some View {
         ZStack {
@@ -51,12 +52,12 @@ struct PairingView: View {
                         .font(.system(size: 29, weight: .medium, design: .rounded))
                         .foregroundStyle(index < pin.count ? CirceStyle.ink : CirceStyle.line)
                         .frame(width: 43, height: 57).background(.white, in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(focused && index == pin.count ? CirceStyle.violet : CirceStyle.line))
+                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(focused == .pin && index == pin.count ? CirceStyle.violet : CirceStyle.line))
                 }
             }.accessibilityHidden(true)
             TextField("Pairing code", text: $pin).textFieldStyle(.plain)
                 .font(.system(size: 1)).foregroundStyle(.clear).tint(.clear)
-                .frame(width: 300, height: 57).focused($focused)
+                .frame(width: 300, height: 57).focused($focused, equals: .pin)
                 .accessibilityLabel("Six-digit pairing code").accessibilityValue(pin)
                 .onChange(of: pin) { _, value in pin = String(value.filter { $0.isASCII && $0.isNumber }.prefix(6)); submitted = false }
                 .onSubmit(submit)
@@ -64,11 +65,12 @@ struct PairingView: View {
     }
     private var accountFields: some View {
         VStack(spacing: 10) {
-            TextField("Account name", text: $username).focused($focused).textContentType(.username)
-            SecureField("Password", text: $password).textContentType(.password).onSubmit(submit)
+            if session.requiresUsername { TextField("Account name", text: $username).focused($focused, equals: .username).textContentType(.username) }
+            SecureField("Password", text: $password).focused($focused, equals: .password).textContentType(.password).onSubmit(submit)
         }.textFieldStyle(.roundedBorder).controlSize(.large).frame(width: 300)
     }
-    private var valid: Bool { usePassword ? !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !password.isEmpty : pin.count == 6 }
+    private var valid: Bool { usePassword ? (!session.requiresUsername || !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && !password.isEmpty : pin.count == 6 }
+    private func focusInput() { focused = usePassword ? (session.requiresUsername ? .username : .password) : .pin }
     private func submit() {
         guard valid, !submitted else { return }
         submitted = true

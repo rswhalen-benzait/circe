@@ -19,7 +19,7 @@ public struct CirceSettingsView: View {
                     Button("Set up sharing…") { showHosting = true }
                 }
                 Section {
-                    Text("To release the remote keyboard, press Control–Option–Command–Escape. Full screen is available from the session toolbar or the Window menu.")
+                    Text("To release the remote keyboard, press Control–Option–Command–Escape. Full screen: Control–Option–Command–F. Hold these three modifiers to use shortcuts on this Mac.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped).tabItem { Label("General", systemImage: "gearshape") }

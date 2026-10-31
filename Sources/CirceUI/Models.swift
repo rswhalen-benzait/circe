@@ -2,11 +2,14 @@ import AppKit
 import Combine
 import Foundation
 
+public enum HostTransport: String { case circe, vnc }
+
 public struct NearbyMac: Identifiable, Equatable {
     public let id: String
     public var name: String
     public var model: String
     public var address: String
+    public var transport: HostTransport
     public var symbol: String {
         let model = model.lowercased()
         if model.contains("macbook") { return "laptopcomputer" }
@@ -14,8 +17,8 @@ public struct NearbyMac: Identifiable, Equatable {
         if model.contains("pro") && !model.contains("imac") { return "macpro.gen3" }
         return "desktopcomputer"
     }
-    public init(id: String, name: String, model: String = "Mac", address: String = "") {
-        self.id = id; self.name = name; self.model = model; self.address = address
+    public init(id: String, name: String, model: String = "Mac", address: String = "", transport: HostTransport = .circe) {
+        self.id = id; self.name = name; self.model = model; self.address = address; self.transport = transport
     }
 }
 
@@ -83,6 +86,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var pinError: String?
     @Published public var allowsPIN = true
     @Published public var allowsPassword = false
+    @Published public var requiresUsername = true
     @Published public var remotePixelSize = CGSize(width: 1280, height: 800)
     @Published public var displays: [RemoteDisplay] = []
     @Published public var selectedDisplayID: UInt32?
@@ -90,6 +94,9 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var clipboardEnabled = true
     @Published public var audioEnabled = true
     @Published public var controlsAvailable = false
+    @Published public var scaleAvailable = false
+    @Published public var clipboardAvailable = false
+    @Published public var audioAvailable = false
     @Published public var qualityAvailable = false
     @Published public var keyboardReleaseAvailable = false
     public var displayView: NSView?

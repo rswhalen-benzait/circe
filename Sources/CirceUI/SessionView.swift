@@ -55,6 +55,12 @@ public struct SessionView: View {
             .onReceive(NotificationCenter.default.publisher(for: .circeDisconnectSession)) { _ in
                 if window?.isKeyWindow == true { session.disconnect() }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .circeToggleStats)) { _ in
+                if window?.isKeyWindow == true { session.showStats.toggle() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .circeReleaseInput)) { _ in
+                if window?.isKeyWindow == true { session.releaseKeyboard(); revealToolbar() }
+            }
     }
     private var connecting: some View {
         VStack(spacing: 18) {
@@ -86,14 +92,14 @@ public struct SessionView: View {
                 Text(session.name).font(.system(size: 11, weight: .medium)).lineLimit(1).frame(maxWidth: 140)
             }.padding(.leading, 11).padding(.trailing, 7)
             separator
-            tool("Enter or leave full screen", symbol: "arrow.up.left.and.arrow.down.right") { window?.toggleFullScreen(nil) }
+            tool("Full screen (⌃⌥⌘F)", symbol: "arrow.up.left.and.arrow.down.right") { window?.toggleFullScreen(nil) }
             Menu {
                 ForEach(DisplayScale.allCases) { scale in
                     Button { session.setScale(scale) } label: { Label(scale.rawValue, systemImage: session.scale == scale ? "checkmark" : "") }
                 }
             } label: { Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left").frame(width: 31, height: 30) }
                 .menuStyle(.borderlessButton).fixedSize().help("Display scale")
-                .disabled(!session.controlsAvailable)
+                .disabled(!session.scaleAvailable)
             Menu {
                 if session.displays.count > 1 {
                     Picker("Display", selection: Binding(get: { session.selectedDisplayID }, set: { if let id = $0 { session.selectDisplay(id) } })) {
@@ -101,8 +107,8 @@ public struct SessionView: View {
                     }
                     Divider()
                 }
-                Toggle("Sync clipboard", isOn: Binding(get: { session.clipboardEnabled }, set: { session.setClipboard($0) })).disabled(!session.controlsAvailable)
-                Toggle("Play remote audio", isOn: Binding(get: { session.audioEnabled }, set: { session.setAudio($0) })).disabled(!session.controlsAvailable)
+                Toggle("Sync clipboard", isOn: Binding(get: { session.clipboardEnabled }, set: { session.setClipboard($0) })).disabled(!session.clipboardAvailable)
+                Toggle("Play remote audio", isOn: Binding(get: { session.audioEnabled }, set: { session.setAudio($0) })).disabled(!session.audioAvailable)
                 Divider()
                 Picker("Quality", selection: Binding(get: { session.quality }, set: { session.setQuality($0) })) {
                     ForEach(StreamQuality.allCases) { Text($0.rawValue).tag($0) }
@@ -115,11 +121,12 @@ public struct SessionView: View {
             } label: { Image(systemName: "slider.horizontal.3").frame(width: 31, height: 30) }
                 .menuStyle(.borderlessButton).fixedSize().help("Session options")
             separator
-            tool("Disconnect", symbol: "power") { session.disconnect() }
+            tool("Disconnect (⌃⌥⌘D)", symbol: "power") { session.disconnect() }
         }.padding(5).foregroundStyle(.white.opacity(0.9))
             .background(.ultraThinMaterial, in: Capsule()).environment(\.colorScheme, .dark)
             .overlay(Capsule().strokeBorder(.white.opacity(0.14)))
             .shadow(color: .black.opacity(0.25), radius: 12, y: 5).fixedSize(horizontal: true, vertical: false)
+            .help("Local shortcuts: ⌃⌥⌘F full screen · ⌃⌥⌘Esc release input · ⌃⌥⌘D disconnect · ⌃⌥⌘S stats")
     }
     private var separator: some View { Rectangle().fill(.white.opacity(0.17)).frame(width: 1, height: 17).padding(.horizontal, 3) }
     private func tool(_ label: String, symbol: String, action: @escaping () -> Void) -> some View {
@@ -262,7 +269,7 @@ struct WindowReader: NSViewRepresentable {
                 guard let self, let window = self.view?.window, event.window === window,
                       let content = window.contentView else { return event }
                 if event.type == .keyDown {
-                    if event.keyCode == 3, event.modifierFlags.isSuperset(of: [.control, .command]), !event.modifierFlags.contains(.option) {
+                    if event.keyCode == 3, event.modifierFlags.isSuperset(of: [.control, .option, .command]) {
                         window.toggleFullScreen(nil); return nil
                     }
                     if event.keyCode == 53, event.modifierFlags.isSuperset(of: [.control, .option, .command]), self.onReleaseKeyboard?() == true { return nil }
@@ -281,4 +288,6 @@ struct WindowReader: NSViewRepresentable {
 
 public extension Notification.Name {
     static let circeDisconnectSession = Notification.Name("CirceDisconnectSession")
+    static let circeToggleStats = Notification.Name("CirceToggleStats")
+    static let circeReleaseInput = Notification.Name("CirceReleaseInput")
 }
