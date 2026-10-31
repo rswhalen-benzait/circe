@@ -70,9 +70,15 @@ Requires macOS 14+ and Swift 6 (Command Line Tools are enough).
 
 ```sh
 scripts/bundle.sh            # builds build/Circe.app (release, ad-hoc signed)
+scripts/make-dmg.sh          # builds and verifies build/Circe.dmg
 swift build                  # debug build of everything
 .build/debug/circe-selftest  # protocol, crypto, FEC, Opus, ARD big-int and address tests
 ```
+
+Disk image packaging also requires Python 3.10+. It installs pinned packaging tools into
+`build/dmg-tools`, sets the Finder layout without UI scripting, and verifies the mounted app,
+Applications link, background, and icon positions. Use `CIRCE_PYTHON=/path/to/python3` to select
+Python, or `scripts/make-dmg.sh --skip-build` to package an existing release app.
 
 End-to-end without Screen Recording permission, using generated frames:
 
