@@ -46,11 +46,16 @@ import SwiftUI
         var cloud = ComputerDraft()
         cloud.instance = "linux-workstation"; cloud.zone = "us-central1-a"
         let cloudComputer = try cloud.computer()
-        precondition(cloudComputer.commandActsAsControl && cloudComputer.audioEnabled && cloudComputer.fitsDesktopToWindow)
+        precondition(cloudComputer.commandActsAsControl && cloudComputer.audioEnabled && cloudComputer.videoEnabled && cloudComputer.fitsDesktopToWindow)
         precondition(cloudComputer.vncPort == 5901)
         if case .googleCloud(_, _, let project, let iap) = cloudComputer.connection { precondition(project == nil && iap) } else { preconditionFailure() }
         try model.saveComputer(cloudComputer)
         precondition(CirceModel(preferences: CircePreferences(defaults: defaults)).computers == [cloudComputer])
+        var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode([cloudComputer])) as! [[String: Any]]
+        legacy[0].removeValue(forKey: "videoEnabled")
+        defaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: "savedComputers.v1")
+        let migrated = CirceModel(preferences: CircePreferences(defaults: defaults))
+        precondition(migrated.computers.count == 1 && migrated.computers[0].videoEnabled, "Existing computer profiles must survive adding the video preference")
         var ssh = ComputerDraft(); ssh.kind = .ssh; ssh.destination = "Dev@my-vm"; ssh.sshPort = "2222"; ssh.display = ":2"
         let sshComputer = try ssh.computer()
         precondition(sshComputer.vncPort == 5902)
@@ -59,9 +64,10 @@ import SwiftUI
         }
         let command = LinuxHostSetup.command(for: sshComputer, scriptURL: URL(fileURLWithPath: "/Applications/Circe's Mac.app/Contents/Resources/Linux/setup-circe-host.sh"))
         precondition(command.contains("'2222'") && command.contains("'Dev@my-vm'") && command.contains("--display 2") && command.contains("'\"'\"'"))
-        var updatedComputer = cloudComputer; updatedComputer.commandActsAsControl = false
+        var updatedComputer = cloudComputer; updatedComputer.commandActsAsControl = false; updatedComputer.videoEnabled = false
         try model.saveComputer(updatedComputer)
         precondition(model.computers.count == 1 && !model.computers[0].commandActsAsControl)
+        precondition(!CirceModel(preferences: CircePreferences(defaults: defaults)).computers[0].videoEnabled)
         var setupCalls = 0, setupConnections = 0
         var setupCompletion: ((Result<SavedComputer, Error>) -> Void)?
         model.onSetupComputer = { computer, completion in
@@ -106,6 +112,10 @@ import SwiftUI
         preferences.matchesWindowResolution = true
         precondition(CircePreferences(defaults: defaults).matchesWindowResolution)
         let session = RemoteSession(name: "Display check", address: "localhost")
+        session.videoMode = .h264(encoder: "nvenc"); session.fps = 28.4
+        precondition(session.videoStatus == "Video: H.264 (NVENC) · 28 fps", "Show measured FPS, not the helper's requested FPS")
+        session.videoMode = .vnc
+        precondition(session.videoStatus == "Video: VNC")
         session.setScale(.actual)
         session.setMatchesWindowResolution(true)
         precondition(session.scale == .fit && session.matchesWindowResolution)

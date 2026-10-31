@@ -104,7 +104,13 @@ public struct SessionView: View {
         HStack(spacing: 4) {
             HStack(spacing: 7) {
                 StatusDot()
-                Text(session.name).font(.system(size: 11, weight: .medium)).lineLimit(1).frame(maxWidth: 140)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.name).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                    if session.videoControlsAvailable {
+                        Text(session.videoStatus).font(.system(size: 9)).foregroundStyle(.white.opacity(0.82)).lineLimit(1)
+                            .help(session.videoStatusHelp)
+                    }
+                }.frame(maxWidth: session.videoControlsAvailable ? 190 : 140, alignment: .leading)
             }.padding(.leading, 11).padding(.trailing, 7)
             separator
             tool("Full screen (Control Option Command F)", control: .fullScreen, symbol: "arrow.up.left.and.arrow.down.right") { window?.toggleFullScreen(nil) }
@@ -128,6 +134,11 @@ public struct SessionView: View {
                 Toggle("Sync clipboard", isOn: Binding(get: { session.clipboardEnabled }, set: { session.setClipboard($0) })).disabled(!session.clipboardAvailable)
                     .help("Local clipboard contents are sent only while this session is focused.")
                 Toggle("Play remote audio", isOn: Binding(get: { session.audioEnabled }, set: { session.setAudio($0) })).disabled(!session.audioAvailable)
+                if session.videoControlsAvailable {
+                    Toggle("Use smooth video", isOn: Binding(get: { session.videoEnabled }, set: { session.setVideo($0) }))
+                        .help("Use H.264 when available, with automatic VNC fallback.")
+                    if session.videoEnabled, let reason = session.videoFallbackReason { Text(reason).help(reason) }
+                }
                 Divider()
                 Picker("Quality", selection: Binding(get: { session.quality }, set: { session.setQuality($0) })) {
                     ForEach(StreamQuality.allCases) { Text($0.rawValue).tag($0) }
@@ -167,7 +178,9 @@ public struct SessionView: View {
     }
     private var stats: some View {
         VStack(alignment: .leading, spacing: 7) {
-            if !session.codec.isEmpty { Text(session.codec).font(.system(size: 10, weight: .semibold)).accessibilityLabel("Video codec: \(session.codec)") }
+            if session.videoControlsAvailable {
+                Text(session.videoStatus).font(.system(size: 10, weight: .semibold)).help(session.videoStatusHelp)
+            } else if !session.codec.isEmpty { Text(session.codec).font(.system(size: 10, weight: .semibold)).accessibilityLabel("Video codec: \(session.codec)") }
             HStack(spacing: 14) {
                 stat(String(format: "%.0f", session.fps), "fps")
                 stat(measured(session.latencyMs), "ms latency")

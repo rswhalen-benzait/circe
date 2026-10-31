@@ -51,6 +51,11 @@ public final class CirceRuntime: ObservableObject {
             engine.clipboardSyncEnabled = self.model.preferences.clipboard
             engine.capturesSystemShortcuts = self.model.preferences.captureShortcuts
             let binding = VNCSessionBinding(engine: engine, presentation: presentation, computerID: computer.id)
+            presentation.onVideo = { [weak self, weak engine] enabled in
+                if engine?.remoteVideoEnabled != enabled { engine?.remoteVideoEnabled = enabled }
+                guard let self, var saved = self.model.computers.first(where: { $0.id == computer.id }) else { return }
+                saved.videoEnabled = enabled; try? self.model.saveComputer(saved)
+            }
             binding.update(computer)
             self.connections[presentation.id] = binding
             engine.connect()
@@ -334,6 +339,18 @@ private final class VNCSessionBinding {
         presentation.scaleAvailable = true
         presentation.clipboardAvailable = true
         presentation.audioAvailable = engine.tunnel.isTunneled
+        presentation.videoControlsAvailable = engine.tunnel.isTunneled
+        presentation.videoEnabled = engine.remoteVideoEnabled
+        presentation.onVideo = { [weak engine] enabled in engine?.remoteVideoEnabled = enabled }
+        engine.$remoteVideoEnabled.sink { [weak presentation] in presentation?.videoEnabled = $0 }.store(in: &observations)
+        engine.$videoMode.sink { [weak presentation] mode in
+            switch mode {
+            case .vnc: presentation?.videoMode = .vnc
+            case .starting: presentation?.videoMode = .starting
+            case .h264(let encoder): presentation?.videoMode = .h264(encoder: encoder)
+            }
+        }.store(in: &observations)
+        engine.$videoFallbackReason.sink { [weak presentation] in presentation?.videoFallbackReason = $0 }.store(in: &observations)
         presentation.audioEnabled = engine.tunnel.isTunneled && engine.remoteAudioEnabled && !engine.audioMuted
         presentation.onAudio = { [weak engine] enabled in engine?.audioMuted = !enabled; engine?.remoteAudioEnabled = enabled }
         presentation.onMatchResolution = { [weak engine] enabled in engine?.fitsRemoteDesktopToWindow = enabled }
@@ -371,6 +388,7 @@ private final class VNCSessionBinding {
         let mapping: CommandKeyMapping = computer.commandActsAsControl ? .control : .super
         if engine.commandKeyMapping != mapping { if engine.state == .streaming { engine.releaseInput() }; engine.commandKeyMapping = mapping }
         if engine.remoteAudioEnabled != computer.audioEnabled { engine.remoteAudioEnabled = computer.audioEnabled }
+        if engine.remoteVideoEnabled != computer.videoEnabled { engine.remoteVideoEnabled = computer.videoEnabled }
         if engine.fitsRemoteDesktopToWindow != computer.fitsDesktopToWindow { engine.fitsRemoteDesktopToWindow = computer.fitsDesktopToWindow }
     }
 }

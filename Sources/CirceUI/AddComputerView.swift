@@ -101,6 +101,8 @@ public struct AddComputerView: View {
                 Toggle("⌘ acts as Control", isOn: $draft.commandActsAsControl).accessibilityLabel("Command acts as Control")
                 Text("Use ⌘C and ⌘V to copy and paste in Linux apps.").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
                 Toggle("Play remote audio", isOn: $draft.audioEnabled)
+                Toggle("Use smooth video", isOn: $draft.videoEnabled)
+                Text("Uses H.264 for motion when available. VNC takes over automatically if video stops.").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
                 Toggle("Fit remote desktop to window", isOn: $draft.fitsDesktopToWindow)
             }.toggleStyle(.checkbox).font(.system(size: 12)).padding(.top, 9)
         }.font(.system(size: 12)).tint(CirceStyle.primaryFill)
@@ -113,7 +115,7 @@ public struct AddComputerView: View {
                 if running { ProgressView().controlSize(.small).accessibilityLabel("Setting up Linux") }
                 else { Button(status == nil ? "Set up & connect" : "Run setup again") { startSetup() }.buttonStyle(QuietButtonStyle()) }
             }
-            Text("Install a lightweight desktop and audio using passwordless sudo. VNC stays private on localhost; existing VNC passwords are kept.")
+            Text("Install a lightweight desktop, audio, and smooth video using passwordless sudo. VNC stays private on localhost; existing VNC passwords are kept.")
                 .font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk).fixedSize(horizontal: false, vertical: true)
             if let status {
                 if case .failed(let message) = status.phase { InlineNotice(title: "Setup needs attention", message: message) }
@@ -178,6 +180,10 @@ struct ComputerSettingsView: View {
                     Toggle("⌘ acts as Control", isOn: setting(computer, \.commandActsAsControl))
                         .accessibilityLabel("Command acts as Control on \(computer.name)")
                     Toggle("Play remote audio", isOn: setting(computer, \.audioEnabled))
+                    Toggle("Use smooth video", isOn: setting(computer, \.videoEnabled))
+                        .accessibilityLabel("Use smooth video on \(computer.name)")
+                    Text("H.264 improves motion when available. VNC takes over automatically if video stops.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Fit remote desktop to window", isOn: setting(computer, \.fitsDesktopToWindow))
                     HStack {
                         Button("Edit connection…") { editing = computer }

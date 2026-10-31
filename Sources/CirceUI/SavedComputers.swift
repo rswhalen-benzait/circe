@@ -12,6 +12,7 @@ public struct SavedComputer: Codable, Equatable, Identifiable {
     public var display: Int
     public var commandActsAsControl: Bool
     public var audioEnabled: Bool
+    public var videoEnabled: Bool
     public var fitsDesktopToWindow: Bool
     public var lastConnected: Date?
     public var vncPort: Int { 5900 + display }
@@ -21,6 +22,24 @@ public struct SavedComputer: Codable, Equatable, Identifiable {
         case let .googleCloud(instance, zone, _, iap): return "\(instance) · \(zone)\(iap ? " · IAP" : " · SSH")"
         case let .ssh(destination, port): return "\(destination)\(port.map { " · port \($0)" } ?? "") · SSH"
         }
+    }
+    public init(id: UUID = UUID(), name: String, connection: ComputerConnection, display: Int = 1,
+                commandActsAsControl: Bool = true, audioEnabled: Bool = true, videoEnabled: Bool = true,
+                fitsDesktopToWindow: Bool = true, lastConnected: Date? = nil) {
+        self.id = id; self.name = name; self.connection = connection; self.display = display
+        self.commandActsAsControl = commandActsAsControl; self.audioEnabled = audioEnabled
+        self.videoEnabled = videoEnabled; self.fitsDesktopToWindow = fitsDesktopToWindow; self.lastConnected = lastConnected
+    }
+    private enum CodingKeys: String, CodingKey {
+        case id, name, connection, display, commandActsAsControl, audioEnabled, videoEnabled, fitsDesktopToWindow, lastConnected
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(id: try values.decode(UUID.self, forKey: .id), name: try values.decode(String.self, forKey: .name),
+                  connection: try values.decode(ComputerConnection.self, forKey: .connection), display: try values.decode(Int.self, forKey: .display),
+                  commandActsAsControl: try values.decode(Bool.self, forKey: .commandActsAsControl),
+                  audioEnabled: try values.decode(Bool.self, forKey: .audioEnabled), videoEnabled: try values.decodeIfPresent(Bool.self, forKey: .videoEnabled) ?? true,
+                  fitsDesktopToWindow: try values.decode(Bool.self, forKey: .fitsDesktopToWindow), lastConnected: try values.decodeIfPresent(Date.self, forKey: .lastConnected))
     }
 }
 
@@ -42,6 +61,7 @@ public struct ComputerDraft: Equatable {
     public var display = "1"
     public var commandActsAsControl = true
     public var audioEnabled = true
+    public var videoEnabled = true
     public var fitsDesktopToWindow = true
     private var lastConnected: Date?
 
@@ -49,7 +69,7 @@ public struct ComputerDraft: Equatable {
         guard let computer else { return }
         id = computer.id; name = computer.name; display = String(computer.display)
         commandActsAsControl = computer.commandActsAsControl
-        audioEnabled = computer.audioEnabled; fitsDesktopToWindow = computer.fitsDesktopToWindow
+        audioEnabled = computer.audioEnabled; videoEnabled = computer.videoEnabled; fitsDesktopToWindow = computer.fitsDesktopToWindow
         lastConnected = computer.lastConnected
         switch computer.connection {
         case let .googleCloud(i, z, p, iap): kind = .googleCloud; instance = i; zone = z; project = p ?? ""; useIAP = iap
@@ -91,7 +111,7 @@ public struct ComputerDraft: Equatable {
         }
         return SavedComputer(id: id, name: label.isEmpty ? defaultName : label, connection: connection, display: number,
                              commandActsAsControl: commandActsAsControl, audioEnabled: audioEnabled,
-                             fitsDesktopToWindow: fitsDesktopToWindow, lastConnected: lastConnected)
+                             videoEnabled: videoEnabled, fitsDesktopToWindow: fitsDesktopToWindow, lastConnected: lastConnected)
     }
 }
 

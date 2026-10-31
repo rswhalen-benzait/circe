@@ -92,6 +92,14 @@ struct PreviewExporter {
             try save("session-stats", SessionView(session: live).frame(width: 800, height: 520))
             live.transport = "IAP"; live.codec = "VNC (Tight/JPEG)"
             try save("session-stats-linux", SessionView(session: live).frame(width: 800, height: 520))
+            live.videoControlsAvailable = true; live.videoMode = .h264(encoder: "x264"); live.fps = 28.4
+            try save("session-linux-video-x264", SessionView(session: live).frame(width: 800, height: 520))
+            live.videoMode = .h264(encoder: "nvenc"); live.fps = 59.7
+            try save("session-linux-video-nvenc", SessionView(session: live).frame(width: 800, height: 520))
+            live.videoMode = .starting; live.fps = 0
+            try save("session-linux-video-starting", SessionView(session: live).frame(width: 800, height: 520))
+            live.videoMode = .vnc; live.videoFallbackReason = "Smooth video isn’t installed on this computer. Run setup again to add it."; live.fps = 12
+            try save("session-linux-video-fallback", SessionView(session: live).frame(width: 800, height: 520))
             let ended = RemoteSession(name: "Studio Mac", address: "studio.local")
             ended.phase = .disconnected("The remote Mac stopped responding. Check that it is awake and connected to the network.")
             try save("disconnected", SessionView(session: ended).frame(width: 800, height: 520))

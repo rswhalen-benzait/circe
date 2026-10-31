@@ -54,6 +54,8 @@ public enum StreamQuality: String, CaseIterable, Identifiable {
     public var id: Self { self }
 }
 
+public enum SessionVideoMode: Equatable { case vnc, starting, h264(encoder: String) }
+
 @MainActor
 public final class CircePreferences: ObservableObject {
     public static let sharingKey = "shareThisMac"
@@ -98,6 +100,27 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var roundTripMs: Double = 0
     @Published public var transport = ""
     @Published public var codec = ""
+    @Published public var videoMode: SessionVideoMode = .vnc
+    @Published public var videoEnabled = true
+    @Published public var videoControlsAvailable = false
+    @Published public var videoFallbackReason: String?
+    public var videoStatus: String {
+        switch videoMode {
+        case .vnc: return "Video: VNC"
+        case .starting: return "Video: starting…"
+        case .h264(let encoder):
+            let name = encoder.lowercased() == "nvenc" ? "NVENC" : encoder.lowercased() == "x264" ? "x264" : encoder
+            let encoderLabel = name.isEmpty || name.lowercased() == "h.264" ? "" : " (\(name))"
+            let rate = fps.isFinite && fps > 0 ? " · \(String(format: "%.0f", fps)) fps" : ""
+            return "Video: H.264\(encoderLabel)\(rate)"
+        }
+    }
+    public var videoStatusHelp: String {
+        if !videoEnabled { return "Smooth video is off for this computer." }
+        if let reason = videoFallbackReason { return reason }
+        if videoMode == .starting { return "VNC keeps showing the desktop while H.264 starts." }
+        return "Frame rate is measured from the current stream."
+    }
     @Published public var droppedFrames = 0
     @Published public var scale: DisplayScale = .fit
     @Published public var matchesWindowResolution = false
@@ -129,6 +152,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     var onMatchResolution: ((Bool) -> Void)?
     var onClipboard: ((Bool) -> Void)?
     var onAudio: ((Bool) -> Void)?
+    var onVideo: ((Bool) -> Void)?
     var onQuality: ((StreamQuality) -> Void)?
     var onReleaseKeyboard: (() -> Void)?
     var onScreenReaderChange: ((Bool) -> Void)?
@@ -156,6 +180,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     }
     public func setClipboard(_ value: Bool) { clipboardEnabled = value; onClipboard?(value) }
     public func setAudio(_ value: Bool) { audioEnabled = value; onAudio?(value) }
+    public func setVideo(_ value: Bool) { videoEnabled = value; onVideo?(value) }
     public func setQuality(_ value: StreamQuality) { quality = value; onQuality?(value) }
     public func releaseKeyboard() { if phase == .streaming { onReleaseKeyboard?() } }
     public func setScreenReaderActive(_ enabled: Bool) { onScreenReaderChange?(enabled) }
