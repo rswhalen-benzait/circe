@@ -11,6 +11,11 @@ public final class SessionDisplayView: NSView {
     /// Size in points after the user stops resizing (debounced).
     var onSettledResize: ((CGSize) -> Void)?
     var onDropFiles: (([URL]) -> Void)?
+    /// True while an acceptable file drag hovers the remote screen; false on exit, cancel, drop or teardown.
+    public var onDragHover: ((Bool) -> Void)?
+    private var dragHovering = false {
+        didSet { if dragHovering != oldValue { onDragHover?(dragHovering) } }
+    }
     var onVisibilityChange: ((Bool) -> Void)?
     private var resizeWork: DispatchWorkItem?
 
@@ -43,10 +48,17 @@ public final class SessionDisplayView: NSView {
     // MARK: Drag & drop files to the remote Mac
 
     public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ? .copy : []
+        let ok = sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        dragHovering = ok
+        return ok ? .copy : []
     }
 
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { dragHovering ? .copy : [] }
+    public override func draggingExited(_ sender: NSDraggingInfo?) { dragHovering = false }
+    public override func draggingEnded(_ sender: NSDraggingInfo) { dragHovering = false }
+
     public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        dragHovering = false
         guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
                                                                options: [.urlReadingFileURLsOnly: true]) as? [URL],
               !urls.isEmpty else { return false }
@@ -122,7 +134,7 @@ public final class SessionDisplayView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
-        guard let w = window else { stopKeyboardCapture(); return }
+        guard let w = window else { stopKeyboardCapture(); dragHovering = false; return }
         for (name, sel) in [(NSWindow.didBecomeKeyNotification, #selector(windowFocusChanged)),
                             (NSWindow.didResignKeyNotification, #selector(windowFocusChanged))] {
             NotificationCenter.default.addObserver(self, selector: sel, name: name, object: w)
