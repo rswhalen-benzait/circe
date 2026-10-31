@@ -55,6 +55,8 @@ public enum StreamQuality: String, CaseIterable, Identifiable {
 
 @MainActor
 public final class CircePreferences: ObservableObject {
+    public static let sharingKey = "shareThisMac"
+    @Published public var shareThisMac: Bool { didSet { defaults.set(shareThisMac, forKey: Self.sharingKey) } }
     @Published public var clipboard: Bool { didSet { defaults.set(clipboard, forKey: "clipboard") } }
     @Published public var audio: Bool { didSet { defaults.set(audio, forKey: "audio") } }
     @Published public var captureShortcuts: Bool { didSet { defaults.set(captureShortcuts, forKey: "captureShortcuts") } }
@@ -64,6 +66,7 @@ public final class CircePreferences: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: ["clipboard": true, "audio": true, "captureShortcuts": true, "showStats": false])
+        shareThisMac = defaults.bool(forKey: Self.sharingKey)
         clipboard = defaults.bool(forKey: "clipboard")
         audio = defaults.bool(forKey: "audio")
         captureShortcuts = defaults.bool(forKey: "captureShortcuts")
@@ -146,7 +149,12 @@ public final class CirceModel: ObservableObject {
     @Published public var accessibilityGranted = false
     @Published public var hostError: String?
     @Published public var discoveryError: String?
-    public let preferences = CircePreferences()
+    @Published public var loginItemStatus: LoginItemStatus = .notRegistered
+    @Published public var loginItemError: String?
+    public var openAtLogin: Bool { loginItemStatus.isRegistered }
+    public var sharingEnabled: Bool { isHosting || preferences.shareThisMac }
+    public let preferences: CircePreferences
+    private var preferenceObservation: AnyCancellable?
     public let computerName = Host.current().localizedName ?? "This Mac"
     var onConnect: ((NearbyMac?, String) -> RemoteSession)?
     var onHostToggle: ((Bool) -> Void)?
@@ -158,7 +166,13 @@ public final class CirceModel: ObservableObject {
     var onForgetComputer: ((String) -> Void)?
     var onPasswordAuthentication: ((Bool) -> Void)?
     var onCloseSession: ((UUID) -> Void)?
-    public init() {}
+    var onSetOpenAtLogin: ((Bool) -> Void)?
+    var onOpenLoginSettings: (() -> Void)?
+    var onShutdown: (() -> Void)?
+    public init(preferences: CircePreferences? = nil) {
+        self.preferences = preferences ?? CircePreferences()
+        preferenceObservation = self.preferences.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
     @discardableResult
     public func connect(to host: NearbyMac) -> RemoteSession { begin(host: host, address: host.address) }
     @discardableResult
@@ -171,7 +185,7 @@ public final class CirceModel: ObservableObject {
         return session
     }
     public func closeSession(_ id: UUID) { sessions[id]?.disconnect(); sessions.removeValue(forKey: id); onCloseSession?(id) }
-    public func setHosting(_ enabled: Bool) { hostError = nil; onHostToggle?(enabled) }
+    public func setHosting(_ enabled: Bool) { hostError = nil; preferences.shareThisMac = enabled; onHostToggle?(enabled) }
     public func refreshPermissions() { onRefreshPermissions?() }
     public func requestScreenRecording() { onRequestScreen?() }
     public func requestAccessibility() { onRequestAccessibility?() }
@@ -179,5 +193,7 @@ public final class CirceModel: ObservableObject {
     public func disconnectClient(_ id: UUID) { onDisconnectClient?(id) }
     public func forgetComputer(_ id: String) { onForgetComputer?(id) }
     public func setPasswordAuthentication(_ allowed: Bool) { onPasswordAuthentication?(allowed) }
-    public func shutdown() { for session in sessions.values { session.disconnect() }; onHostToggle?(false) }
+    public func setOpenAtLogin(_ enabled: Bool) { loginItemError = nil; onSetOpenAtLogin?(enabled) }
+    public func openLoginSettings() { onOpenLoginSettings?() }
+    public func shutdown() { for session in sessions.values { session.disconnect() }; onShutdown?() }
 }

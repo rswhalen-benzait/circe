@@ -13,6 +13,14 @@ public struct CirceSettingsView: View {
                     Text("New sessions use this preference. You can also show or hide stats from the session toolbar.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Startup") {
+                    Toggle("Open Circe at login", isOn: Binding(get: { model.openAtLogin }, set: { model.setOpenAtLogin($0) }))
+                    if model.loginItemStatus == .requiresApproval {
+                        Text("Allow Circe in Login Items to finish enabling it.").font(.caption).foregroundStyle(.secondary)
+                        Button("Open Login Items…") { model.openLoginSettings() }
+                    }
+                    if let error = model.loginItemError { Text(error).font(.caption).foregroundStyle(.red) }
+                }
                 Section("Sharing this Mac") {
                     LabeledContent("Computer name", value: model.computerName)
                     LabeledContent("Status", value: model.isHosting ? "Available to connect" : "Private")

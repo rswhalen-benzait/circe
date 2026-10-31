@@ -31,10 +31,12 @@ public struct HostingSetupView: View {
                         .font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
                 }
                 Spacer()
-                Toggle("Allow others to connect to this Mac", isOn: Binding(get: { model.isHosting }, set: { model.setHosting($0) }))
+                Toggle("Allow others to connect to this Mac", isOn: Binding(get: { model.sharingEnabled }, set: { model.setHosting($0) }))
                     .labelsHidden().toggleStyle(.switch).tint(CirceStyle.violet)
-                    .disabled(model.isHostStarting || (!model.isHosting && (!model.screenRecordingGranted || !model.accessibilityGranted)))
+                    .disabled(model.isHostStarting || (!model.sharingEnabled && (!model.screenRecordingGranted || !model.accessibilityGranted)))
             }
+            Text("Sharing also turns on Open Circe at login.").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
+            if let error = model.loginItemError { InlineNotice(title: "Login setup needs attention", message: error) }
             if model.isHosting, let pin = model.pairingPIN {
                 VStack(alignment: .leading, spacing: 8) {
                     SectionEyebrow(title: "Pairing code")
@@ -82,10 +84,11 @@ public struct HostMenuView: View {
                 Spacer()
                 StatusDot(color: model.isHosting ? CirceStyle.green : .secondary)
             }
-            Toggle("Allow others to connect", isOn: Binding(get: { model.isHosting }, set: { value in
+            Toggle("Allow others to connect", isOn: Binding(get: { model.sharingEnabled }, set: { value in
                 if value && (!model.screenRecordingGranted || !model.accessibilityGranted) { showSetup = true }
                 else { model.setHosting(value) }
             })).toggleStyle(.switch).tint(CirceStyle.violet).font(.system(size: 12, weight: .medium))
+            Text("Sharing also opens Circe at login.").font(.system(size: 10)).foregroundStyle(.secondary)
             if model.isHosting {
                 if let pin = model.pairingPIN {
                     VStack(alignment: .leading, spacing: 5) {
@@ -97,6 +100,10 @@ public struct HostMenuView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             } else { Text("This Mac is private. Turn on sharing to connect from another computer.").font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             if let error = model.hostError { Text(error).font(.system(size: 11)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if let error = model.loginItemError { Text(error).font(.system(size: 11)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if model.loginItemStatus == .requiresApproval {
+                Button("Allow Circe in Login Items…") { model.openLoginSettings() }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(CirceStyle.violet)
+            }
             if !model.sharingConnections.isEmpty {
                 VStack(spacing: 10) {
                     ForEach(model.sharingConnections) { client in

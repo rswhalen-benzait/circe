@@ -14,19 +14,29 @@ public final class CirceRuntime: ObservableObject {
     public let model: CirceModel
     private let browser: HostBrowser
     private let host: HostService
+    private let loginService: any LoginItemServicing
     private let screenSharingBrowser = ScreenSharingBrowser()
     private var observations = Set<AnyCancellable>()
     private var discovered: [String: DiscoveredHost] = [:]
     private var screenSharingHosts: [String: ScreenSharingBrowser.Host] = [:]
     private var connections: [UUID: AnyObject] = [:]
 
-    public init() {
-        model = CirceModel()
+    public init(preferences: CircePreferences? = nil, loginService: (any LoginItemServicing)? = nil) {
+        model = CirceModel(preferences: preferences)
+        self.loginService = loginService ?? SystemLoginItemService()
         host = .shared
         browser = HostBrowser(excludeDeviceID: DeviceIdentity.loadOrCreate().deviceID)
         model.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &observations)
         attachDiscovery()
         attachHosting()
+        model.onSetOpenAtLogin = { [weak self] in self?.setOpenAtLogin($0) }
+        model.onOpenLoginSettings = { [weak self] in self?.loginService.openSettings() }
+        model.onShutdown = { [weak self] in
+            self?.host.stop(); self?.browser.stop(); self?.screenSharingBrowser.stop()
+        }
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification).sink { [weak self] _ in
+            self?.model.shutdown()
+        }.store(in: &observations)
         model.onConnect = { [weak self] host, address in
             guard let self else { return RemoteSession(name: host?.name ?? address, address: address) }
             return self.makeSession(host: host, address: address)
@@ -35,6 +45,7 @@ public final class CirceRuntime: ObservableObject {
         refreshPermissions()
         browser.start()
         screenSharingBrowser.start()
+        if model.preferences.shareThisMac { startHosting() }
     }
 
     private func makeSession(host: NearbyMac?, address: String) -> RemoteSession {
@@ -122,20 +133,21 @@ public final class CirceRuntime: ObservableObject {
         }.store(in: &observations)
         model.onHostToggle = { [weak self] enabled in
             guard let self else { return }
-            self.refreshPermissions()
             if enabled {
-                guard self.model.screenRecordingGranted, self.model.accessibilityGranted else {
-                    self.model.hostError = "Allow Screen Recording and Accessibility to share this Mac."
-                    return
-                }
-                self.model.isHostStarting = true
-                self.host.start()
+                self.setOpenAtLogin(true)
+                self.startHosting()
             } else {
                 self.model.isHostStarting = false
                 self.host.stop()
             }
         }
-        model.onRefreshPermissions = { [weak self] in self?.refreshPermissions() }
+
+        model.onRefreshPermissions = { [weak self] in
+            guard let self else { return }
+            self.refreshPermissions()
+            if self.model.preferences.shareThisMac && !self.model.isHosting && !self.model.isHostStarting &&
+                self.model.screenRecordingGranted && self.model.accessibilityGranted { self.startHosting() }
+        }
         model.onRequestScreen = { [weak self] in
             _ = Permissions.requestScreenRecording()
             Permissions.openScreenRecordingSettings()
@@ -152,7 +164,24 @@ public final class CirceRuntime: ObservableObject {
         refreshTrustedComputers()
     }
 
+    private func startHosting() {
+        refreshPermissions()
+        guard model.screenRecordingGranted, model.accessibilityGranted else {
+            model.hostError = "Allow Screen Recording and Accessibility to share this Mac."
+            return
+        }
+        model.isHostStarting = true
+        host.start()
+    }
+
+    private func setOpenAtLogin(_ enabled: Bool) {
+        do { try loginService.setEnabled(enabled); model.loginItemError = nil }
+        catch { model.loginItemError = "Couldn’t change Open Circe at login: \(error.localizedDescription)" }
+        model.loginItemStatus = loginService.status
+    }
+
     private func refreshPermissions() {
+        model.loginItemStatus = loginService.status
         model.screenRecordingGranted = Permissions.screenRecording
         model.accessibilityGranted = Permissions.accessibility
     }

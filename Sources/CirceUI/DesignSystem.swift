@@ -84,6 +84,7 @@ struct InlineNotice: View {
 public enum CirceWindows {
     /// Keep a single launcher even though WindowGroup handles macOS 14's initial launch.
     @discardableResult public static func showLauncherIfOpen() -> Bool {
+        CirceStartup.revealLauncher()
         guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == "circe.launcher" }) else { return false }
         window.deminiaturize(nil); window.makeKeyAndOrderFront(nil)
         return true

@@ -16,7 +16,6 @@ struct CirceApp: App {
         WindowGroup("Circe", id: "launcher") {
             LauncherView(model: runtime.model)
                 .onAppear { lifecycleLog.info("Launcher appeared")
-                    appDelegate.onQuit = { runtime.model.shutdown() }
                     DispatchQueue.main.async { lifecycleLog.info("Visible app windows: \(NSApp.windows.filter { $0.isVisible }.count)") } }
         }
         .defaultSize(width: 640, height: 650)
@@ -67,10 +66,25 @@ private struct ShowLauncherButton: View {
 
 @MainActor
 final class CirceAppDelegate: NSObject, NSApplicationDelegate {
-    var onQuit: (() -> Void)?
-    func applicationDidFinishLaunching(_ notification: Notification) { NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true); lifecycleLog.info("Application launched with \(NSApp.windows.count) windows") }
+    private var finishedLaunching = false
+    private func configureStartup() {
+        CirceStartup.configure(sharingEnabled: UserDefaults.standard.bool(forKey: CircePreferences.sharingKey))
+        NSApp.setActivationPolicy(CirceStartup.isQuietLaunch ? .accessory : .regular)
+    }
+    func applicationWillFinishLaunching(_ notification: Notification) { configureStartup() }
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        if finishedLaunching { return true }
+        configureStartup()
+        return !CirceStartup.isQuietLaunch
+    }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        configureStartup(); finishedLaunching = true
+        if CirceStartup.isQuietLaunch {
+            for window in NSApp.windows where window.identifier?.rawValue == "circe.launcher" { window.orderOut(nil) }
+        } else { NSApp.activate(ignoringOtherApps: true) }
+        lifecycleLog.info("Application launched; quiet: \(CirceStartup.isQuietLaunch)")
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { onQuit?() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { _ = CirceWindows.showLauncherIfOpen() }
         return true

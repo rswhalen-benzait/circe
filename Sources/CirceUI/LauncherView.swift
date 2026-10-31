@@ -25,7 +25,10 @@ public struct LauncherView: View {
         .frame(minWidth: 540, idealWidth: 640, minHeight: 570, idealHeight: 650)
         .background(CirceStyle.paper).foregroundStyle(CirceStyle.ink)
         .preferredColorScheme(.light)
-        .background(WindowReader(onWindow: { $0?.identifier = NSUserInterfaceItemIdentifier("circe.launcher") }))
+        .background(WindowReader(onWindow: { window in
+            window?.identifier = NSUserInterfaceItemIdentifier("circe.launcher")
+            if CirceStartup.isQuietLaunch { window?.orderOut(nil) }
+        }))
         .sheet(isPresented: $showHost) { HostingSetupView(model: model) }
         .onAppear { model.refreshPermissions() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshPermissions() }
