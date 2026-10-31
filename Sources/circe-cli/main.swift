@@ -89,7 +89,10 @@ func runConnect() {
                         session.submitPIN(pin)
                     } else { log("host needs pairing; pass --pin"); exit(3) }
                 }
-                if case .streaming = session.state { start = Date() }
+                if case .streaming = session.state {
+                    start = Date()
+                    if let f = value("--send") { session.sendFiles([URL(fileURLWithPath: f)]) }
+                }
                 if case .disconnected(let r) = session.state { log("disconnected: \(r ?? "-")"); exit(4) }
             }
             if let start {

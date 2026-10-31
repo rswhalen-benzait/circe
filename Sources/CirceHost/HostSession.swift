@@ -123,6 +123,12 @@ final class HostSession: @unchecked Sendable {
             refreshKeyframe()
         case (.streaming, .clipboard(let p)):
             onClipboard?(p)
+        case let (.streaming, .fileBegin(id, name, size)):
+            files.begin(id: id, name: name, size: size)
+        case let (.streaming, .fileChunk(id, data)):
+            files.chunk(id: id, data: data)
+        case let (.streaming, .fileEnd(id, cancelled)):
+            files.end(id: id, cancelled: cancelled)
         case (_, .ping(let id, let t)):
             conn.send(.pong(id: id, sentMicros: t, peerMicros: Clock.micros()))
         case (_, .goodbye(let g)):
@@ -204,8 +210,22 @@ final class HostSession: @unchecked Sendable {
 
     // MARK: Streaming pipeline
 
+    private let modeMatcher = DisplayModeMatcher()
+    private let files = FileReceiver()
+
     private func reconfigure(_ cfg: StreamConfig) {
-        let needsRestart = capturer == nil || cfg.displayID != config.displayID || cfg.maxFPS != config.maxFPS
+        var modeChanged = false
+        if cfg.matchResolution == true, let w = cfg.viewportPointWidth, let h = cfg.viewportPointHeight, w > 200, h > 150 {
+            if cfg.viewportPointWidth != config.viewportPointWidth || cfg.viewportPointHeight != config.viewportPointHeight
+                || config.matchResolution != true || cfg.displayID != config.displayID {
+                let target = cfg.displayID ?? capturer?.display?.displayID ?? CGMainDisplayID()
+                modeChanged = modeMatcher.match(display: target, pointWidth: w, pointHeight: h)
+            }
+        } else if config.matchResolution == true {
+            modeMatcher.restore()
+            modeChanged = true
+        }
+        let needsRestart = modeChanged || (capturer == nil && synthetic == nil) || cfg.displayID != config.displayID || cfg.maxFPS != config.maxFPS
             || cfg.localCursor != config.localCursor || cfg.audioEnabled != config.audioEnabled
             || cfg.viewportPixelWidth != config.viewportPixelWidth || cfg.viewportPixelHeight != config.viewportPixelHeight
         let bitrateChanged = cfg.bitrate != config.bitrate || cfg.quality != config.quality
@@ -417,6 +437,8 @@ final class HostSession: @unchecked Sendable {
         let wasAuth = phase == .auth
         phase = .closed
         stopPipeline()
+        modeMatcher.restore()
+        files.cancelAll()
         releasePowerAssertion()
         injector?.releaseAll()
         injector = nil

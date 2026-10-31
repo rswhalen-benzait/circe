@@ -42,6 +42,8 @@ public final class ClientSession: ObservableObject, Identifiable {
 
     @Published public var clipboardSyncEnabled = true { didSet { updateClipboard() } }
     @Published public var audioMuted = false { didSet { link.setMuted(audioMuted) } }
+    /// Resize the remote Mac's display to fit this window (like Screen Sharing's dynamic resolution).
+    @Published public var matchesWindowResolution = false { didSet { sendViewport(displayView.bounds.size) } }
 
     /// The remote screen. Put it in a window; it handles all input.
     public let displayView = SessionDisplayView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800))
@@ -62,6 +64,17 @@ public final class ClientSession: ObservableObject, Identifiable {
         link.session = self
         displayView.onInput = { [weak self] e in self?.link.send(.input(e)) }
         displayView.localCursor = config.localCursor
+        displayView.onSettledResize = { [weak self] size in self?.sendViewport(size) }
+        displayView.onDropFiles = { [weak self] urls in self?.sendFiles(urls) }
+    }
+
+    private func sendViewport(_ size: CGSize) {
+        guard state == .streaming || state == .connecting else { return }
+        update {
+            $0.matchResolution = matchesWindowResolution
+            $0.viewportPointWidth = matchesWindowResolution ? Double(size.width) : nil
+            $0.viewportPointHeight = matchesWindowResolution ? Double(size.height) : nil
+        }
     }
 
     public convenience init(host: DiscoveredHost, config: StreamConfig = StreamConfig()) {
@@ -120,6 +133,9 @@ public final class ClientSession: ObservableObject, Identifiable {
     /// Return keyboard/mouse to this Mac; clicking the remote screen captures again.
     public func releaseInput() { displayView.releaseInput() }
     public func captureInput() { displayView.captureInput() }
+
+    /// Copy files to the remote Mac's Downloads folder (also triggered by dragging onto `displayView`).
+    public func sendFiles(_ urls: [URL]) { link.sendFiles(urls) }
 
     /// Ask the host for a fresh full frame (e.g. after visual corruption).
     public func refresh() { link.send(.requestKeyframe) }
@@ -295,6 +311,40 @@ private final class Link: @unchecked Sendable {
             if case .configure(let c) = m { config = c }
             conn?.send(m)
         }
+    }
+
+    private var nextFileID: UInt32 = 0
+
+    /// Streams files in 256 KB chunks, yielding to video whenever the socket has a backlog.
+    func sendFiles(_ urls: [URL]) {
+        queue.async { [self] in
+            for url in urls {
+                guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                      (attrs[.type] as? FileAttributeType) == .typeRegular,
+                      let size = (attrs[.size] as? NSNumber)?.uint64Value,
+                      let handle = try? FileHandle(forReadingFrom: url) else { continue }
+                nextFileID &+= 1
+                let id = nextFileID
+                conn?.send(.fileBegin(id: id, name: url.lastPathComponent, size: size))
+                pump(id: id, handle: handle)
+            }
+        }
+    }
+
+    private func pump(id: UInt32, handle: FileHandle) {
+        guard let conn else { try? handle.close(); return }
+        if conn.pendingSendBytes > 2 << 20 {
+            queue.asyncAfter(deadline: .now() + 0.005) { [weak self] in self?.pump(id: id, handle: handle) }
+            return
+        }
+        let data = (try? handle.read(upToCount: 256 << 10)) ?? Data()
+        if data.isEmpty {
+            try? handle.close()
+            conn.send(.fileEnd(id: id, cancelled: false))
+            return
+        }
+        conn.send(.fileChunk(id: id, data: data))
+        queue.async { [weak self] in self?.pump(id: id, handle: handle) }
     }
 
     func setMuted(_ m: Bool) { queue.async { [self] in muted = m; audio?.setMuted(m) } }

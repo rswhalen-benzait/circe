@@ -8,6 +8,10 @@ public final class SessionDisplayView: NSView {
     let renderer = VideoRenderer()
     var onInput: ((InputEvent) -> Void)?
     var onFocusChange: ((Bool) -> Void)?
+    /// Size in points after the user stops resizing (debounced).
+    var onSettledResize: ((CGSize) -> Void)?
+    var onDropFiles: (([URL]) -> Void)?
+    private var resizeWork: DispatchWorkItem?
 
     /// Remote display size in points; used to letterbox and map coordinates.
     var remoteSize = CGSize(width: 16, height: 10) { didSet { needsLayout = true; window?.invalidateCursorRects(for: self) } }
@@ -32,6 +36,21 @@ public final class SessionDisplayView: NSView {
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.addSublayer(renderer.layer)
         layerContentsRedrawPolicy = .never
+        registerForDraggedTypes([.fileURL])
+    }
+
+    // MARK: Drag & drop files to the remote Mac
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ? .copy : []
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                               options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              !urls.isEmpty else { return false }
+        onDropFiles?(urls)
+        return true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -59,6 +78,11 @@ public final class SessionDisplayView: NSView {
         renderer.layer.frame = videoRect
         renderer.layer.contentsScale = window?.backingScaleFactor ?? 2
         CATransaction.commit()
+        resizeWork?.cancel()
+        let size = bounds.size
+        let work = DispatchWorkItem { [weak self] in self?.onSettledResize?(size) }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
     }
 
     public override func viewDidChangeBackingProperties() {

@@ -123,6 +123,10 @@ public struct StreamConfig: Codable, Sendable, Equatable {
     public var viewportPixelWidth: Int?
     public var viewportPixelHeight: Int?
     public var codecs: [VideoCodec]
+    /// Ask the host to switch its display mode to best fit the client's window (restored afterwards).
+    public var matchResolution: Bool?
+    public var viewportPointWidth: Double?
+    public var viewportPointHeight: Double?
 
     public init(displayID: UInt32? = nil, quality: QualityPreset = .high, maxFPS: Int = 60, bitrate: Int? = nil,
                 audioEnabled: Bool = true, localCursor: Bool = true, viewportPixelWidth: Int? = nil,
@@ -274,6 +278,10 @@ public enum Message: Sendable {
     case ping(id: UInt32, sentMicros: UInt64)
     case pong(id: UInt32, sentMicros: UInt64, peerMicros: UInt64)
     case goodbye(Goodbye)
+    /// Drag-and-drop file transfer (client -> host).
+    case fileBegin(id: UInt32, name: String, size: UInt64)
+    case fileChunk(id: UInt32, data: Data)
+    case fileEnd(id: UInt32, cancelled: Bool)
 
     enum Kind: UInt8 {
         case clientHello = 1, serverHello, auth, authResult, streamStart, configure
@@ -282,6 +290,7 @@ public enum Message: Sendable {
         case cursorShape = 0x30, cursorPosition
         case clipboard = 0x40
         case ping = 0x50, pong
+        case fileBegin = 0x60, fileChunk, fileEnd
         case goodbye = 0x7F
     }
 
@@ -318,6 +327,11 @@ public enum Message: Sendable {
             w.u8(Kind.cursorPosition.rawValue); w.f32(x); w.f32(y); w.bool(visible); w.u32(shape)
         case let .ping(id, t): w.u8(Kind.ping.rawValue); w.u32(id); w.u64(t)
         case let .pong(id, t, p): w.u8(Kind.pong.rawValue); w.u32(id); w.u64(t); w.u64(p)
+        case let .fileBegin(id, name, size): w.u8(Kind.fileBegin.rawValue); w.u32(id); w.string(name); w.u64(size)
+        case let .fileChunk(id, data):
+            w = ByteWriter(capacity: data.count + 16)
+            w.u8(Kind.fileChunk.rawValue); w.u32(id); w.blob(data)
+        case let .fileEnd(id, cancelled): w.u8(Kind.fileEnd.rawValue); w.u32(id); w.bool(cancelled)
         }
         return w.data
     }
@@ -353,6 +367,9 @@ public enum Message: Sendable {
             return .cursorPosition(x: try r.f32(), y: try r.f32(), visible: try r.bool(), shapeID: try r.u32())
         case .ping: return .ping(id: try r.u32(), sentMicros: try r.u64())
         case .pong: return .pong(id: try r.u32(), sentMicros: try r.u64(), peerMicros: try r.u64())
+        case .fileBegin: return .fileBegin(id: try r.u32(), name: try r.string(), size: try r.u64())
+        case .fileChunk: return .fileChunk(id: try r.u32(), data: try r.blob())
+        case .fileEnd: return .fileEnd(id: try r.u32(), cancelled: try r.bool())
         }
     }
 }

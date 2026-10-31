@@ -138,3 +138,53 @@ enum AccountVerifier {
         }
     }
 }
+
+// MARK: - File transfer
+
+/// Receives dropped files into ~/Downloads on the host, then reveals them.
+final class FileReceiver {
+    private var files: [UInt32: (handle: FileHandle, url: URL, expected: UInt64, written: UInt64)] = [:]
+    private let maxFiles = 64
+    /// Test hook: receive into this directory and don't reveal in Finder.
+    static let overrideDirectory = ProcessInfo.processInfo.environment["CIRCE_RECEIVE_DIR"].map { URL(fileURLWithPath: $0) }
+
+    func begin(id: UInt32, name: String, size: UInt64) {
+        guard files.count < maxFiles else { return }
+        // Never trust a remote path: keep only the last component and strip leading dots.
+        var safe = (name as NSString).lastPathComponent.replacingOccurrences(of: "/", with: "_")
+        while safe.hasPrefix(".") { safe.removeFirst() }
+        if safe.isEmpty { safe = "Received file" }
+        let dir = Self.overrideDirectory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        var url = dir.appendingPathComponent(safe)
+        let base = url.deletingPathExtension().lastPathComponent, ext = url.pathExtension
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = dir.appendingPathComponent(ext.isEmpty ? "\(base) \(n)" : "\(base) \(n).\(ext)")
+            n += 1
+        }
+        guard FileManager.default.createFile(atPath: url.path, contents: nil),
+              let h = try? FileHandle(forWritingTo: url) else { return }
+        files[id] = (h, url, size, 0)
+    }
+
+    func chunk(id: UInt32, data: Data) {
+        guard var f = files[id] else { return }
+        f.written += UInt64(data.count)
+        guard f.written <= f.expected else { end(id: id, cancelled: true); return }
+        try? f.handle.write(contentsOf: data)
+        files[id] = f
+    }
+
+    func end(id: UInt32, cancelled: Bool) {
+        guard let f = files.removeValue(forKey: id) else { return }
+        try? f.handle.close()
+        if cancelled || f.written != f.expected {
+            try? FileManager.default.removeItem(at: f.url)
+        } else if Self.overrideDirectory == nil {
+            let url = f.url
+            DispatchQueue.main.async { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+    }
+
+    func cancelAll() { for id in Array(files.keys) { end(id: id, cancelled: true) } }
+}
