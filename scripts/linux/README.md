@@ -4,6 +4,9 @@ Use a Debian or Ubuntu VM with systemd, an ordinary Linux account, and sudo acce
 The installer creates a separate XFCE desktop on display `:1`, keeps TigerVNC on
 loopback only, and provides headless audio through PulseAudio or an existing
 PipeWire-pulse server. RHEL/Rocky/Fedora are best-effort; XFCE may require EPEL/CRB.
+Setup also attempts to install FFmpeg and the smooth-video helper. Video is
+optional: a missing encoder keeps VNC usable. See [smooth video](VIDEO.md) for
+CPU defaults, NVENC probing, diagnostics, and the FLV interface.
 
 ## Install on the VM
 
