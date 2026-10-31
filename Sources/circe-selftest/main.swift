@@ -347,21 +347,31 @@ extension FLVTests {
         let frames = try framer.feed(Data(flv))
         expect(frames.count == 3 && frames[0].isKeyframe)
         guard let first = frames.first, first.parameterSets.count >= 2 else { return fail("no parameter sets") }
+        let centres = Self.decodeCentres(frames, width: w, height: h)
+        for (i, want) in colours.enumerated() {
+            guard let got = centres[i] else { fail("frame \(i) did not decode"); continue }
+            let diff = [16, 8, 0].map { abs(Int((got >> $0) & 0xFF) - Int((want >> $0) & 0xFF)) }.max()!
+            if diff > 24 { fail(String(format: "frame %d centre %08X, wanted %08X", i, got, want)) }
+        }
+    }
+
+    /// Hardware-decodes framed video; returns each frame's centre BGRA pixel (nil = failed to decode).
+    static func decodeCentres(_ frames: [VideoFrame], width w: Int, height h: Int) -> [UInt32?] {
+        guard let sets = frames.first?.parameterSets, sets.count >= 2 else { return frames.map { _ in nil } }
         var fmt: CMVideoFormatDescription?
-        let sets = first.parameterSets
         let status = sets[0].withUnsafeBytes { sps in sets[1].withUnsafeBytes { pps in
             let ptrs = [sps.baseAddress!.assumingMemoryBound(to: UInt8.self), pps.baseAddress!.assumingMemoryBound(to: UInt8.self)]
             return CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: nil, parameterSetCount: 2, parameterSetPointers: ptrs,
                                                                        parameterSetSizes: [sets[0].count, sets[1].count],
                                                                        nalUnitHeaderLength: 4, formatDescriptionOut: &fmt)
         } }
-        guard status == noErr, let fmt else { return fail("format \(status)") }
         var dec: VTDecompressionSession?
         let attrs = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA] as CFDictionary
-        guard VTDecompressionSessionCreate(allocator: nil, formatDescription: fmt, decoderSpecification: nil,
+        guard status == noErr, let fmt,
+              VTDecompressionSessionCreate(allocator: nil, formatDescription: fmt, decoderSpecification: nil,
                                            imageBufferAttributes: attrs, outputCallback: nil, decompressionSessionOut: &dec) == noErr,
-              let dec else { return fail("no decoder") }
-        for (i, f) in frames.enumerated() {
+              let dec else { return frames.map { _ in nil } }
+        return frames.map { f in
             var block: CMBlockBuffer?
             let data = f.data
             CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: data.count, blockAllocator: nil,
@@ -371,7 +381,7 @@ extension FLVTests {
             var size = data.count
             CMSampleBufferCreateReady(allocator: nil, dataBuffer: block, formatDescription: fmt, sampleCount: 1, sampleTimingEntryCount: 0,
                                       sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample)
-            var got: UInt32 = 0
+            var got: UInt32?
             VTDecompressionSessionDecodeFrame(dec, sampleBuffer: sample!, flags: [], infoFlagsOut: nil) { st, _, image, _, _ in
                 guard st == noErr, let image else { return }
                 CVPixelBufferLockBaseAddress(image, .readOnly)
@@ -380,9 +390,7 @@ extension FLVTests {
                 CVPixelBufferUnlockBaseAddress(image, .readOnly)
             }
             VTDecompressionSessionWaitForAsynchronousFrames(dec)
-            let want = colours[i]
-            let diff = [16, 8, 0].map { abs(Int((got >> $0) & 0xFF) - Int((want >> $0) & 0xFF)) }.max()!
-            if diff > 24 { fail(String(format: "frame %d centre %08X, wanted %08X", i, got, want)) }
+            return got
         }
     }
 }
@@ -472,6 +480,18 @@ func run(_ name: String, _ body: () throws -> Void) {
     let before = failures
     do { try body() } catch { failures += 1; print("  FAIL \(name): threw \(error)") }
     print("\(failures == before ? "ok  " : "FAIL") \(name)")
+}
+
+// `circe-selftest --decode-flv PATH WxH`: decode a real helper's stream; prints frames and the last centre pixel.
+if let i = CommandLine.arguments.firstIndex(of: "--decode-flv"), i + 2 < CommandLine.arguments.count {
+    let wh = CommandLine.arguments[i + 2].split(separator: "x").compactMap { Int($0) }
+    var framer = LinuxVideoFramer()
+    let frames = (try? framer.feed(try! Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[i + 1])))) ?? []
+    let centres = FLVTests.decodeCentres(frames, width: wh[0], height: wh[1])
+    let decoded = centres.compactMap { $0 }
+    print(String(format: "frames=%d decoded=%d keyframes=%d centre=%06X", frames.count, decoded.count,
+                 frames.filter(\.isKeyframe).count, (decoded.last ?? 0) & 0xFFFFFF))
+    exit(frames.isEmpty || decoded.count != frames.count ? 1 : 0)
 }
 
 // Fixture writer for scripts/test/linux-e2e.sh: `circe-selftest --write-test-ogg PATH`.

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-# Fake Circe video helper: replays FAKE_VIDEO_FLV (an H.264 FLV) at 60 fps, looping its frames.
+# Fake Circe video helper (or, with FAKE_VIDEO_REAL=1, the real one on a test pattern): replays FAKE_VIDEO_FLV (an H.264 FLV) at 60 fps, looping its frames.
 # Unset FAKE_VIDEO_FLV = "video not possible here" (exit 69), like a VM without ffmpeg.
 # FAKE_VIDEO_LAG=1: frames arrive 3x slower than their timestamps advance (a link that can't keep up) until restarted with --bitrate-kbps.
 # FAKE_VIDEO_EXIT_AFTER=N: the stream dies after N seconds on the first run only (FAKE_VIDEO_RUN tags the run).
 import json, os, struct, sys, time
+if os.environ.get("FAKE_VIDEO_REAL"):  # run the REAL helper (needs CIRCE_TEST_FFMPEG) + real x264, test pattern instead of X11
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), *[".."] * 5, ".."))
+    os.environ["PATH"] = os.path.join(root, "scripts/test/realvideo") + ":" + os.environ["PATH"]
+    os.execv("/bin/bash", ["bash", os.path.join(root, "scripts/linux/circe-video.sh")] + sys.argv[1:])
 path = os.environ.get("FAKE_VIDEO_FLV")
 if not path:
     print("circe-video: ffmpeg is not installed", file=sys.stderr); sys.exit(69)

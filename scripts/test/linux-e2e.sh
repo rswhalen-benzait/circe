@@ -49,4 +49,13 @@ check "Plain auth refused without a tunnel" "unencrypted" $CLI vnc 127.0.0.1:592
 check "wrong password is reported" "Authentication failed" $CLI vnc --ssh t@vm --display 21 --user circe --password nope
 check "ssh key refused is explained" "SSH refused the login" env FAKE_SSH_FAIL="Permission denied (publickey)." $CLI vnc --ssh t@vm --display 21
 check "missing VNC server is explained" "no VNC server is running" $CLI vnc --ssh t@vm --display 49
+# Optional: the REAL video helper + real x264 (test pattern instead of X11). CIRCE_TEST_FFMPEG=/path/to/ffmpeg
+if [[ -n "${CIRCE_TEST_FFMPEG:-}" ]]; then
+  check "real helper + x264 → client (auto 30 fps on 4 CPUs)" "mismatches=0" \
+    env FAKE_VIDEO_REAL=1 XDG_RUNTIME_DIR="$TMP" $CLI vnc --ssh t@vm --display 22 --password x --seconds 4 --expect-video --min-fps 25
+  ( PATH="$PWD/scripts/test/realvideo:$PATH" CIRCE_TEST_PATTERN="color=c=0x2040E0" XDG_RUNTIME_DIR="$TMP" \
+      bash scripts/linux/circe-video.sh --display 1 > "$TMP/real.flv" 2>/dev/null & p=$!; sleep 2; pkill -TERM -P $p; kill $p ) 2>/dev/null
+  check "real x264 stream decodes in VideoToolbox with correct colour" "centre=1F3EDD" \
+    .build/debug/circe-selftest --decode-flv "$TMP/real.flv" 1280x800
+fi
 echo; echo "$pass passed, $fail failed"; exit $fail

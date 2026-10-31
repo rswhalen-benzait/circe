@@ -1,0 +1,2 @@
+#!/bin/sh
+printf "screen #0:\n  dimensions:    1280x800 pixels\n"

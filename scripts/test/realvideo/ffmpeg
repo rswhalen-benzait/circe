@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+# Shim for the REAL circe-video.sh on macOS: swaps x11grab (Linux-only) for a live lavfi test
+# pattern at the same size and rate; every other option goes to the real FFmpeg unchanged.
+import os, sys
+real = os.environ["CIRCE_TEST_FFMPEG"]
+a = sys.argv[1:]
+if "-devices" in a:
+    print(" D  x11grab  shim"); sys.exit(0)
+if "x11grab" in a:
+    i = a.index("-f"); j = a.index("-i") + 2
+    pattern = os.environ.get("CIRCE_TEST_PATTERN", "testsrc2")  # e.g. color=c=0x2040E0
+    size = a[a.index("-video_size") + 1]; rate = a[a.index("-framerate") + 1]
+    a = a[:i] + ["-f", "lavfi", "-i", pattern + (":" if "=" in pattern else "=") + f"size={size}:rate={rate},realtime"] + a[j:]  # paced like a capture
+os.execv(real, [real] + a)
