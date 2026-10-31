@@ -61,6 +61,7 @@ public final class CircePreferences: ObservableObject {
     @Published public var audio: Bool { didSet { defaults.set(audio, forKey: "audio") } }
     @Published public var captureShortcuts: Bool { didSet { defaults.set(captureShortcuts, forKey: "captureShortcuts") } }
     @Published public var showStats: Bool { didSet { defaults.set(showStats, forKey: "showStats") } }
+    @Published public var matchesWindowResolution: Bool { didSet { defaults.set(matchesWindowResolution, forKey: "matchesWindowResolution") } }
     @Published public var quality: StreamQuality { didSet { defaults.set(quality.rawValue, forKey: "quality") } }
     private let defaults: UserDefaults
     public init(defaults: UserDefaults = .standard) {
@@ -71,6 +72,7 @@ public final class CircePreferences: ObservableObject {
         audio = defaults.bool(forKey: "audio")
         captureShortcuts = defaults.bool(forKey: "captureShortcuts")
         showStats = defaults.bool(forKey: "showStats")
+        matchesWindowResolution = defaults.bool(forKey: "matchesWindowResolution")
         quality = StreamQuality(rawValue: defaults.string(forKey: "quality") ?? "") ?? .automatic
     }
 }
@@ -85,6 +87,8 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var latencyMs: Double = 0
     @Published public var bitrateMbps: Double = 0
     @Published public var scale: DisplayScale = .fit
+    @Published public var matchesWindowResolution = false
+    @Published public var resolutionMatchingAvailable = false
     @Published public var showStats = false
     @Published public var pinError: String?
     @Published public var allowsPIN = true
@@ -108,6 +112,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     var onDisconnect: (() -> Void)?
     var onReconnect: (() -> Void)?
     var onScale: ((DisplayScale) -> Void)?
+    var onMatchResolution: ((Bool) -> Void)?
     var onClipboard: ((Bool) -> Void)?
     var onAudio: ((Bool) -> Void)?
     var onQuality: ((StreamQuality) -> Void)?
@@ -125,7 +130,14 @@ public final class RemoteSession: ObservableObject, Identifiable {
     }
     public var canReconnect: Bool { onReconnect != nil }
     public func reconnect() { guard let onReconnect else { return }; phase = .connecting; pinError = nil; onReconnect() }
-    public func setScale(_ value: DisplayScale) { scale = value; onScale?(value) }
+    public func setScale(_ value: DisplayScale) {
+        if value == .actual && matchesWindowResolution { setMatchesWindowResolution(false) }
+        scale = value; onScale?(value)
+    }
+    public func setMatchesWindowResolution(_ enabled: Bool) {
+        if enabled && scale != .fit { setScale(.fit) }
+        matchesWindowResolution = enabled; onMatchResolution?(enabled)
+    }
     public func setClipboard(_ value: Bool) { clipboardEnabled = value; onClipboard?(value) }
     public func setAudio(_ value: Bool) { audioEnabled = value; onAudio?(value) }
     public func setQuality(_ value: StreamQuality) { quality = value; onQuality?(value) }

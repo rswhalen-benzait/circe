@@ -107,6 +107,9 @@ public struct SessionView: View {
                     }
                     Divider()
                 }
+                Toggle("Fit remote display to window", isOn: Binding(get: { session.matchesWindowResolution }, set: { session.setMatchesWindowResolution($0) }))
+                    .disabled(!session.resolutionMatchingAvailable)
+                Divider()
                 Toggle("Sync clipboard", isOn: Binding(get: { session.clipboardEnabled }, set: { session.setClipboard($0) })).disabled(!session.clipboardAvailable)
                 Toggle("Play remote audio", isOn: Binding(get: { session.audioEnabled }, set: { session.setAudio($0) })).disabled(!session.audioAvailable)
                 Divider()

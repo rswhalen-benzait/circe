@@ -69,6 +69,7 @@ public final class CirceRuntime: ObservableObject {
                 }
                 engine = ClientSession(endpoint: endpoint, name: parsed.host, config: config)
             }
+            engine.matchesWindowResolution = model.preferences.matchesWindowResolution
             engine.clipboardSyncEnabled = model.preferences.clipboard
             engine.capturesSystemShortcuts = model.preferences.captureShortcuts
             let binding = NativeSessionBinding(engine: engine, presentation: presentation)
@@ -203,6 +204,10 @@ private final class NativeSessionBinding {
         presentation.scaleAvailable = true
         presentation.clipboardAvailable = true
         presentation.audioAvailable = true
+        presentation.resolutionMatchingAvailable = true
+        presentation.matchesWindowResolution = engine.matchesWindowResolution
+        presentation.onMatchResolution = { [weak engine] in engine?.matchesWindowResolution = $0 }
+        engine.$matchesWindowResolution.sink { [weak presentation] in presentation?.matchesWindowResolution = $0 }.store(in: &observations)
         presentation.qualityAvailable = true
         presentation.keyboardReleaseAvailable = true
         presentation.onReleaseKeyboard = { [weak engine] in engine?.releaseInput() }

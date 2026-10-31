@@ -9,6 +9,9 @@ public struct CirceSettingsView: View {
         TabView {
             Form {
                 Section("Connections") {
+                    Toggle("Fit remote display to window", isOn: $preferences.matchesWindowResolution)
+                    Text("For new Circe sessions, adjusts the remote Mac’s display resolution as you resize the window. Its previous resolution returns when you disconnect.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Show connection stats", isOn: $preferences.showStats)
                     Text("New sessions use this preference. You can also show or hide stats from the session toolbar.")
                         .font(.caption).foregroundStyle(.secondary)

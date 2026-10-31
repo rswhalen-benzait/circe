@@ -23,6 +23,14 @@ import Foundation
         precondition(sharingRequests == [true, false])
         precondition(LoginItemStatus.enabled.isRegistered && LoginItemStatus.requiresApproval.isRegistered)
         precondition(!LoginItemStatus.notRegistered.isRegistered && !LoginItemStatus.unavailable.isRegistered)
+        preferences.matchesWindowResolution = true
+        precondition(CircePreferences(defaults: defaults).matchesWindowResolution)
+        let session = RemoteSession(name: "Display check", address: "localhost")
+        session.setScale(.actual)
+        session.setMatchesWindowResolution(true)
+        precondition(session.scale == .fit && session.matchesWindowResolution)
+        session.setScale(.actual)
+        precondition(!session.matchesWindowResolution)
         let login = NSAppleEventDescriptor(eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEOpenApplication),
                                           targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
         login.setParam(NSAppleEventDescriptor(enumCode: keyAELaunchedAsLogInItem), forKeyword: AEKeyword(keyAEPropData))
