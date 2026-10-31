@@ -86,7 +86,8 @@ final class CirceAppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { _ = CirceWindows.showLauncherIfOpen() }
+        let hasMainWindow = sender.windows.contains { $0.isVisible && $0.canBecomeMain }
+        if CirceStartup.isQuietLaunch || !hasMainWindow { _ = CirceWindows.showLauncherIfOpen() }
         return true
     }
 }
