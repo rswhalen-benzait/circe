@@ -9,3 +9,15 @@ __pycache__/
 *.py[cod]
 
 scripts/test/fakehome/Library/
+
+.env
+
+.env.*
+
+!.env.example
+
+!.env.sample
+
+*.keychain
+
+*.keychain-db

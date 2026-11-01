@@ -1,0 +1,51 @@
+name: Privacy
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    if: github.event.deleted != true
+    name: Privacy checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the complete candidate history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the checksum-pinned secret scanner
+        run: python3 scripts/install-privacy-hooks.py --tools-only
+      - name: Test privacy protection
+        run: python3 scripts/test/check_privacy_guard.py
+      - name: Check the current repository
+        run: python3 scripts/privacy_check.py --tracked
+      - name: Check every proposed commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_HEAD: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            python3 scripts/privacy_check.py --range "$PR_BASE" "$PR_HEAD"
+          elif [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
+            # Exclude the shared, already published default-branch history on a new branch.
+            if base=$(git merge-base "$PUSH_HEAD" "origin/$DEFAULT_BRANCH"); then
+              python3 scripts/privacy_check.py --range "$base" "$PUSH_HEAD"
+            else
+              empty=$(git hash-object -w -t tree /dev/null)
+              root=$(printf 'Privacy audit base\n' | git -c user.name=CI -c user.email=ci@example.invalid commit-tree "$empty")
+              python3 scripts/privacy_check.py --range "$root" "$PUSH_HEAD"
+            fi
+          else
+            python3 scripts/privacy_check.py --range "$PUSH_BEFORE" "$PUSH_HEAD"
+          fi

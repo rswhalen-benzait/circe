@@ -694,7 +694,7 @@ struct GoogleCloudReviewTests {
         Host example-vm
             HostName cloud-developer-workstation
             User developer_example_org
-            IdentityFile /home/developer/.ssh/google_compute_engine
+            IdentityFile /example-home/developer/.ssh/google_compute_engine
         Host *
           User nobody
         Match exec "rm -rf /"
@@ -706,7 +706,7 @@ struct GoogleCloudReviewTests {
     }
 
     func testCirceConfigurationKeepsOnlyNetworkSettings() {
-        let active = "[core]\naccount = other@example.org\nproject = wrong\ncustom_ca_certs_file = /etc/example-ca.pem\n[auth]\nimpersonate_service_account = sa@p.iam.gserviceaccount.com\naccess_token_file = /tmp/token\n[proxy]\ntype = http\naddress = proxy.example.org\nport = 3128\n[compute]\nzone = us-east1-b\n"
+        let active = "[core]\naccount = other@example.org\nproject = wrong\ncustom_ca_certs_file = /etc/example-ca.pem\n[auth]\nimpersonate_service_account = service-account@example.invalid\naccess_token_file = /tmp/token\n[proxy]\ntype = http\naddress = proxy.example.org\nport = 3128\n[compute]\nzone = us-east1-b\n"
         let ours = GoogleCloud.configuration(from: active)
         expect(ours.contains("custom_ca_certs_file = /etc/example-ca.pem") && ours.contains("[proxy]") && ours.contains("address = proxy.example.org"))
         expect(!ours.contains("account") && !ours.contains("impersonate") && !ours.contains("access_token_file") && !ours.contains("project") && !ours.contains("zone"))

@@ -1,0 +1,13 @@
+title = "Circe public-source secret protection"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Swift declares a key's type here; there is no credential value."
+condition = "AND"
+regexTarget = "line"
+paths = ['''(?:^|/)Sources/CirceCore/Security\.swift$''']
+regexes = ['''^\s*public let privateKey: Curve25519\.KeyAgreement\.PrivateKey\s*$''']

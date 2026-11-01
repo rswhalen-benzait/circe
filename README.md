@@ -186,3 +186,9 @@ python3 scripts/test/check_linux_video.py; python3 scripts/test/check_linux_setu
 - Connecting through NAT without a VPN (use Tailscale or similar for now).
 - Logging in at the remote Mac's login window before any user has logged in (needs a
   privileged helper).
+
+## Contributing safely
+
+This is a public repository. Agents and contributors must follow [AGENTS.md](AGENTS.md).
+Before committing, run `python3 scripts/install-privacy-hooks.py` to enable the local privacy checks.
+See [the privacy guide](docs/PRIVACY.md) for fictional examples, private local terms, and CI enforcement.
