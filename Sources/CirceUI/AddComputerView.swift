@@ -10,7 +10,10 @@ public struct AddComputerView: View {
     private let isEditing: Bool
     public init(model: CirceModel, computer: SavedComputer? = nil) {
         self.model = model; isEditing = computer != nil
-        _draft = CirceViewState(initialValue: ComputerDraft(computer: computer))
+        var initial = ComputerDraft(computer: computer)
+        // Pin today's gcloud account, so switching accounts in gcloud later can't break this computer.
+        if computer == nil { initial.account = model.activeGoogleAccount() ?? "" }
+        _draft = CirceViewState(initialValue: initial)
     }
     init(model: CirceModel, draft: ComputerDraft) {
         self.model = model; isEditing = false
@@ -71,8 +74,13 @@ public struct AddComputerView: View {
                     field("Zone", placeholder: "us-central1-a", text: $draft.zone)
                     field("Project", placeholder: "Optional project ID", text: $draft.project)
                 }
+                HStack(alignment: .top, spacing: 12) {
+                    field("Google account", placeholder: "gcloud’s active account", text: $draft.account)
+                    field("Linux user", placeholder: "Optional", text: $draft.linuxUser).frame(width: 150)
+                }
+                Toggle("Start this computer when I connect if it’s stopped", isOn: $draft.startsWhenConnecting).toggleStyle(.checkbox).font(.system(size: 12))
                 Toggle("Use Identity-Aware Proxy (IAP)", isOn: $draft.useIAP).toggleStyle(.checkbox).font(.system(size: 12))
-                Text("Uses your existing gcloud sign-in and SSH access. IAP can reach VMs without a public IP.")
+                Text("Uses this Google account’s gcloud sign-in, even if you switch gcloud accounts, and your SSH access. IAP can reach VMs without a public IP. For a guided setup that finds your computer for you, choose Add a computer → Google Cloud computer.")
                     .font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk).fixedSize(horizontal: false, vertical: true)
             } else {
                 HStack(alignment: .top, spacing: 12) {
@@ -101,6 +109,7 @@ public struct AddComputerView: View {
                 Toggle("⌘ acts as Control", isOn: $draft.commandActsAsControl).accessibilityLabel("Command acts as Control")
                 Text("Use ⌘C and ⌘V to copy and paste in Linux apps.").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
                 Toggle("Play remote audio", isOn: $draft.audioEnabled)
+                Toggle("Send this Mac’s microphone", isOn: $draft.microphoneEnabled)
                 Toggle("Use smooth video", isOn: $draft.videoEnabled)
                 Text("Uses H.264 for motion when available. VNC takes over automatically if video stops.").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
                 Toggle("Fit remote desktop to window", isOn: $draft.fitsDesktopToWindow)

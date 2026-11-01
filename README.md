@@ -15,12 +15,38 @@ and password. After that, connections are instant.
 You can also type an address: `studio.local`, `10.0.0.5`, `host:47800`, or `vnc://host` for a
 VNC server.
 
-**Linux and Google Cloud:** choose *Add a computer*. Save an SSH destination or Google Cloud
-instance/zone (IAP is on by default), then connect with one click. *Set up & connect* installs a
-private XFCE desktop and headless audio over SSH, saves the generated VNC password in Keychain,
-and connects. SSH access must already work; automatic setup needs passwordless sudo.
-See [Linux host setup](scripts/linux/README.md) for prerequisites, manual setup, and diagnostics.
-Per-computer keyboard mapping, audio, and desktop resizing are in Settings → Computers.
+**Google Cloud:** choose *Add a computer → Google Cloud computer*. Enter your Google email; if
+this Mac isn't signed in, *Sign in with Google* opens Google's page in your browser. If the Mac has
+no Google Cloud CLI (or one too old to run), Circe installs a pinned, checksum-verified copy inside
+its own folder. Pick the project and the computer from lists (or type them). A stopped computer can
+be started from Circe, after a note about cost and GPUs. Circe then checks Google's private
+connection, finds your Linux user from Google's records (OS Login or the VM's metadata), and looks
+for a desktop. It offers an existing one (for example wayvnc on Omarchy) before installing anything.
+Otherwise *Set up & connect* gives the computer a desktop Circe can show, on Ubuntu/Debian, Fedora/RHEL or
+Arch. You see the same desktop as Chrome Remote Desktop or RDP. If one of those sessions is already open,
+Circe shows that very session, with its windows, sound and microphone. If not, Circe starts the computer's
+own desktop (GNOME, KDE…) with all its apps. Only on a computer without one does it install XFCE. Setup asks
+for your Linux password only if sudo needs it. Circe uses that password once and never saves it.
+No sudo, or no Linux password? Circe installs a lighter desktop into your own folder from the computer's
+own signed packages, with no password at all (see [Linux host setup](scripts/linux/README.md)).
+*Set up & connect* then opens the desktop. After that, clicking the computer connects. If its sign-in
+has expired, the window offers *Sign in with Google* (and to open Google's page again if you closed it).
+If the computer is stopped, it offers *Start computer*, or starts it for you if you chose that. If the
+computer doesn't let your desktop keep running on its own, Circe starts it when you connect and keeps it
+running while you're connected.
+
+Each computer remembers its Google account, so switching gcloud's active account elsewhere never
+breaks it. Connections run ssh through `gcloud compute start-iap-tunnel` with that account, the
+Linux user, and the VM's host key pinned in Circe's own `known_hosts`. They make no cloud changes.
+The only change Circe ever makes to Google Cloud is adding your Mac's public key when a computer
+doesn't accept it yet, and only after you agree. When something needs an administrator (IAP role,
+firewall, permission to start, installing a desktop or system updates), Circe copies a precise request
+for them, with the exact commands for that computer.
+
+**Other Linux (SSH):** choose *Add a computer → Other Linux computer (SSH)*, save `user@host` or an
+SSH-config alias, then *Set up & connect*. See [Linux host setup](scripts/linux/README.md) for
+prerequisites, manual setup, and diagnostics. Per-computer keyboard mapping, audio, and desktop
+resizing are in Settings → Computers.
 
 On a Linux computer, ⌘ acts as Control by default, so ⌘C, ⌘V and ⌘T do what your fingers expect.
 The remote desktop resizes to your window, sound plays through a second SSH channel, the clipboard
@@ -146,11 +172,17 @@ python3 scripts/test/check_linux_video.py; python3 scripts/test/check_linux_setu
   recovery and no 4:4:4 colour, so fine coloured text is a little softer than on a Mac-to-Mac
   session. Google says IAP isn't meant for bulk transfer and may rate-limit it; a direct SSH route
   (public IP or VPN) is faster.
-- The Linux path hasn't been run against a real GCP VM yet. Fixtures mimic ssh, TigerVNC,
-  PulseAudio and the VM helpers. The real video helper and real x264 output were tested on macOS
-  with a test pattern in place of X11 capture. Run `scripts/test/linux-e2e.sh`, then try a real VM.
+- Google Cloud has been exercised against real VMs: IAP checks, Linux sign-in, the probe, VNC
+  streaming of an existing wayvnc desktop, and a full install without administrator access (Ubuntu
+  24.04 with PipeWire). The same install has run end to end over Circe's own SSH code on Ubuntu 24.04,
+  Fedora 41 and Rocky 9 with real systemd (desktop, sound, microphone, keyboard, reboot), and on Debian
+  12 and Arch without systemd. The in-app sudo password path has run only against fixtures. Smooth video can't capture Wayland desktops yet
+  (wayvnc keeps VNC pixels). OS Login SSH two-factor prompts and Workspace accounts that block
+  gcloud's sign-in aren't supported. Circe uses Google's own CLI, not its own OAuth client.
 
-- Microphone forwarding to the remote Mac (it needs a virtual audio device on the host).
+- Microphone forwarding to a remote *Mac* (it needs a virtual audio device on the host). Linux computers can get this
+  Mac's microphone as “Mac microphone (Circe)”, their default input while it's on. It's off until you turn it on for
+  that computer (the microphone button in the session toolbar); a “Sending microphone” indicator shows while it streams.
 - Connecting through NAT without a VPN (use Tailscale or similar for now).
 - Logging in at the remote Mac's login window before any user has logged in (needs a
   privileged helper).

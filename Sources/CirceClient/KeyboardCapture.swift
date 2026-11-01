@@ -13,7 +13,7 @@ public final class KeyboardCapture {
 
     public static let escapeFlags: CGEventFlags = [.maskControl, .maskAlternate, .maskCommand]
 
-    public var isRunning: Bool { tap != nil }
+    public var isRunning: Bool { tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false }
 
     public init(handler: @escaping (CGEvent) -> Void) {
         self.handler = handler
@@ -23,7 +23,7 @@ public final class KeyboardCapture {
 
     @discardableResult
     public func start() -> Bool {
-        guard tap == nil, Self.isPermitted else { return tap != nil }
+        guard tap == nil, Self.isPermitted else { return isRunning }
         let mask = (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         guard let t = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
@@ -36,7 +36,7 @@ public final class KeyboardCapture {
         runLoopSource = CFMachPortCreateRunLoopSource(nil, t, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: t, enable: true)
-        return true
+        return isRunning
     }
 
     public func stop() {

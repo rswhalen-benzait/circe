@@ -6,7 +6,12 @@ public final class VNCDisplayView: NSView {
     let imageLayer = CALayer()
     /// Hardware-decoded video of the same desktop (Linux H.264 stream), shown over the VNC image.
     private(set) var videoLayer: CALayer?
-    var client: RFBClient?
+    var client: RFBClient? {
+        willSet {
+            // A new connection has no knowledge of the old connection's pressed keys.
+            if client !== newValue { releaseAll() }
+        }
+    }
     var isApple = false
     var framebufferSize = CGSize(width: 16, height: 10) { didSet { needsLayout = true; window?.invalidateCursorRects(for: self) } }
 
@@ -115,7 +120,7 @@ public final class VNCDisplayView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
-        guard let w = window else { keyboardCapture?.stop(); return }
+        guard let w = window else { keyboardCapture?.stop(); releaseAll(); return }
         for n in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(focusChanged), name: n, object: w)
         }
@@ -143,6 +148,7 @@ public final class VNCDisplayView: NSView {
     }
 
     public override func resignFirstResponder() -> Bool {
+        keyboardCapture?.stop()
         releaseAll()
         defer { DispatchQueue.main.async { [weak self] in self?.updateKeyboardCapture() } }
         return super.resignFirstResponder()
@@ -160,7 +166,7 @@ public final class VNCDisplayView: NSView {
         if hasInputFocus && capturesSystemShortcuts {
             if keyboardCapture == nil {
                 keyboardCapture = KeyboardCapture { [weak self] cg in
-                    guard let self, let e = NSEvent(cgEvent: cg) else { return }
+                    guard let self, self.hasInputFocus, let e = NSEvent(cgEvent: cg) else { return }
                     switch e.type {
                     case .keyDown: self.key(e, down: true)
                     case .keyUp: self.key(e, down: false)
@@ -175,20 +181,20 @@ public final class VNCDisplayView: NSView {
         }
     }
 
-    private var capturing: Bool { keyboardCapture?.isRunning ?? false }
-
     private func releaseAll() {
         for (_, sym) in downKeys { client?.sendKey(sym, down: false) }
-        for (_, sym) in modifiers { client?.sendKey(sym, down: false) }
+        for sym in Set(modifiers.values).sorted() { client?.sendKey(sym, down: false) }
         downKeys.removeAll()
         modifiers.removeAll()
         if buttons != 0 { buttons = 0; sendPointer(nil) }
     }
 
     private func key(_ e: NSEvent, down: Bool) {
+        reconcileModifiers(e)
         if down {
             guard let sym = KeySyms.keysym(for: e) else { return }
-            if let prev = downKeys[e.keyCode], prev != sym { client?.sendKey(prev, down: false) }
+            // A fresh press after a lost key-up must not remain a duplicate down on wayvnc.
+            if let prev = downKeys[e.keyCode], prev != sym || !e.isARepeat { client?.sendKey(prev, down: false) }
             downKeys[e.keyCode] = sym
             client?.sendKey(sym, down: true)
         } else if let sym = downKeys.removeValue(forKey: e.keyCode) {
@@ -196,20 +202,62 @@ public final class VNCDisplayView: NSView {
         }
     }
 
-    private func flags(_ e: NSEvent) {
-        guard let sym = KeySyms.modifier(e.keyCode, apple: isApple, command: commandMapping), let flag = KeySyms.modifierFlag(e.keyCode) else { return }
-        let down = e.modifierFlags.contains(flag) && modifiers[e.keyCode] == nil
-        if down { modifiers[e.keyCode] = sym } else { modifiers[e.keyCode] = nil }
-        client?.sendKey(sym, down: down)
+    // Device-side bits from IOKit/hidsystem/IOLLEvent.h. Aggregate flags alone cannot tell
+    // which Command was released when both are held. Synthetic events may omit these bits.
+    private static let modifierGroups: [(NSEvent.ModifierFlags, [(UInt16, UInt)])] = [
+        (.shift, [(0x38, 0x02), (0x3C, 0x04)]),
+        (.control, [(0x3B, 0x01), (0x3E, 0x2000)]),
+        (.option, [(0x3A, 0x20), (0x3D, 0x40)]),
+        (.command, [(0x37, 0x08), (0x36, 0x10)]),
+    ]
+
+    private func reconcileModifiers(_ e: NSEvent) {
+        // Caps Lock keeps its existing lock-key behavior; reconcile momentary modifiers only.
+        var wanted = modifiers.filter { $0.key == 0x39 }
+        for (flag, sides) in Self.modifierGroups where e.modifierFlags.contains(flag) {
+            let physical = sides.filter { e.modifierFlags.rawValue & $0.1 != 0 }.map { $0.0 }
+            let codes: [UInt16]
+            if !physical.isEmpty {
+                codes = physical
+            } else {
+                // Without side bits, retain a known side or choose the changed/canonical key.
+                let held = sides.map { $0.0 }.filter { modifiers[$0] != nil }
+                codes = held.isEmpty ? [sides.first(where: { $0.0 == e.keyCode })?.0 ?? sides[0].0] : held
+            }
+            for code in codes { wanted[code] = KeySyms.modifier(code, apple: isApple, command: commandMapping) }
+        }
+        // Command-as-Control aliases physical keys to Control_R. Release it only when no
+        // physical owner remains, and never turn a repeated flags snapshot into a key-up.
+        let old = Set(modifiers.values), new = Set(wanted.values)
+        for sym in old.subtracting(new).sorted() { client?.sendKey(sym, down: false) }
+        for sym in new.subtracting(old).sorted() { client?.sendKey(sym, down: true) }
+        modifiers = wanted
     }
 
-    public override func keyDown(with e: NSEvent) { if !capturing { key(e, down: true) } }
-    public override func keyUp(with e: NSEvent) { if !capturing { key(e, down: false) } }
-    public override func flagsChanged(with e: NSEvent) { if !capturing { flags(e) } }
+    private func flags(_ e: NSEvent) {
+        reconcileModifiers(e)
+        if e.keyCode == 0x39, let sym = KeySyms.modifier(e.keyCode, apple: isApple, command: commandMapping) {
+            let down = e.modifierFlags.contains(.capsLock) && modifiers[e.keyCode] == nil
+            if down { modifiers[e.keyCode] = sym } else { modifiers[e.keyCode] = nil }
+            client?.sendKey(sym, down: down)
+        }
+    }
+
+    // The tap returns nil for captured events, so they never reach AppKit. Events that
+    // do reach us may have been queued before the tap started: don't discard them based
+    // on its current state. Keep the local escape chord out of the remote key-down path.
+    public override func keyDown(with e: NSEvent) {
+        if !e.modifierFlags.isSuperset(of: [.control, .option, .command]) { key(e, down: true) }
+    }
+    public override func keyUp(with e: NSEvent) { key(e, down: false) }
+    public override func flagsChanged(with e: NSEvent) { flags(e) }
 
     public override func performKeyEquivalent(with e: NSEvent) -> Bool {
         guard window?.firstResponder === self, !e.modifierFlags.isSuperset(of: [.control, .option, .command]) else { return false }
-        if !capturing { key(e, down: true) }
+        key(e, down: true)
+        // AppKit handles Command equivalents separately from keyDown; a matching keyUp
+        // is not assured. Balance the press here so the next identical chord can fire.
+        if e.modifierFlags.contains(.command) { key(e, down: false) }
         return true
     }
 

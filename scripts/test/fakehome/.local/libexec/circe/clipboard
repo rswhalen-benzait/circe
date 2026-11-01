@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stand-in for Circe's clipboard helper: with FAKE_CLIPBOARD_TEXT the display is "showing an open session" and
+# that text is its clipboard; SET lines from Circe are written to FAKE_CLIPBOARD_SET. Otherwise nothing to do (69).
+[ -n "${FAKE_CLIPBOARD_TEXT:-}" ] || exit 69
+echo CIRCE_CLIPBOARD_READY
+printf 'CLIP %s\n' "$(printf '%s' "$FAKE_CLIPBOARD_TEXT" | base64 | tr -d '\n')"
+while IFS= read -r line; do
+  [ -n "${FAKE_CLIPBOARD_SET:-}" ] && printf '%s\n' "$line" >> "$FAKE_CLIPBOARD_SET"
+done

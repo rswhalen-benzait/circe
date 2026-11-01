@@ -482,6 +482,12 @@ func run(_ name: String, _ body: () throws -> Void) {
     print("\(failures == before ? "ok  " : "FAIL") \(name)")
 }
 
+if CommandLine.arguments.contains("--session-lifecycle-only") {
+    runSessionLifecycleTests()
+    runDesktopDiscoveryTests()
+    exit(failures == 0 ? 0 : 1)
+}
+
 // `circe-selftest --decode-flv PATH WxH`: decode a real helper's stream; prints frames and the last centre pixel.
 if let i = CommandLine.arguments.firstIndex(of: "--decode-flv"), i + 2 < CommandLine.arguments.count {
     let wh = CommandLine.arguments[i + 2].split(separator: "x").compactMap { Int($0) }
@@ -515,6 +521,306 @@ if let i = CommandLine.arguments.firstIndex(of: "--write-test-ogg"), i + 1 < Com
     exit(0)
 }
 
+struct GCloudTests {
+    func testSSHArgumentsPinAccountAndUser() {
+        expect(GCloud.sshArgs(instance: "vm", zone: "us-east4-a", project: nil, iap: true)
+               == ["compute", "ssh", "vm", "--zone", "us-east4-a", "--quiet", "--tunnel-through-iap"])
+        expect(GCloud.sshArgs(instance: "vm", zone: "z", project: "p", iap: false, account: "me@example.org", user: "developer")
+               == ["compute", "ssh", "developer@vm", "--zone", "z", "--quiet", "--project", "p", "--account=me@example.org"])
+        expect(GCloud.sshArgs(instance: "vm", zone: "z", project: "", iap: false, account: "", user: "")
+               == ["compute", "ssh", "vm", "--zone", "z", "--quiet"])
+        let tunnel = RFBTunnel.gcloud(instance: "vm", zone: "z", project: "p", useIAP: true, vncPort: 5901, account: "me@example.org", user: "developer")
+        let stream = try? tunnel.streamCommand()
+        expect(stream?.1.prefix(8) == ["compute", "ssh", "developer@vm", "--zone", "z", "--quiet", "--project", "p"])
+        expect(stream?.1.contains("--account=me@example.org") == true && stream?.1.suffix(2) == ["-W", "localhost:5901"])
+        // Saved VNC passwords are keyed without account/user, so pinning an account keeps them.
+        expect(tunnel.keychainAccount == RFBTunnel.gcloud(instance: "vm", zone: "z", project: "p", useIAP: true, vncPort: 5901).keychainAccount)
+    }
+
+    func testActiveAccountReadsGCloudConfiguration() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("circe-gcloud-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("configurations"), withIntermediateDirectories: true)
+        try "work\n".write(to: dir.appendingPathComponent("active_config"), atomically: true, encoding: .utf8)
+        try "[compute]\naccount = wrong@example.org\n[core]\nproject = p\naccount = me@example.org\n"
+            .write(to: dir.appendingPathComponent("configurations/config_work"), atomically: true, encoding: .utf8)
+        expect(GCloud.activeAccount(environment: ["CLOUDSDK_CONFIG": dir.path], home: "/nonexistent") == "me@example.org")
+        expect(GCloud.activeAccount(environment: ["CLOUDSDK_CONFIG": dir.path, "CLOUDSDK_CORE_ACCOUNT": "env@example.org"], home: "/") == "env@example.org")
+        expect(GCloud.activeAccount(environment: ["CLOUDSDK_CONFIG": dir.path, "CLOUDSDK_ACTIVE_CONFIG_NAME": "missing"], home: "/") == nil)
+        expect(GCloud.activeAccount(environment: ["CLOUDSDK_CONFIG": dir.path, "CLOUDSDK_ACTIVE_CONFIG_NAME": "../x"], home: "/") == nil)
+    }
+
+    func testExplainsWrongAccountAndUser() {
+        let unpinned = RFBTunnel.gcloud(instance: "vm", zone: "z", project: "p", useIAP: true, vncPort: 5901)
+        let pinned = RFBTunnel.gcloud(instance: "vm", zone: "z", project: "p", useIAP: true, vncPort: 5901, account: "me@example.org", user: nil)
+        let lookup = "ERROR: (gcloud.compute.ssh) Could not fetch resource:\n - Required 'compute.instances.get' permission for 'projects/p/zones/z/instances/vm'"
+        let wrong = ProcessPipe.explain(lookup, tunnel: unpinned, activeAccount: { "other@example.org" })
+        expect(wrong.contains("other@example.org") && wrong.contains("project p") && wrong.contains("Edit connection"))
+        expect(ProcessPipe.explain(lookup, tunnel: pinned, activeAccount: { "other@example.org" }).contains("me@example.org"))
+        let iap = ProcessPipe.explain("Error while connecting [4033: 'not authorized'].", tunnel: unpinned, activeAccount: { "other@example.org" })
+        expect(iap.contains("other@example.org") && iap.contains("Edit connection"))
+        let key = ProcessPipe.explain("developer@compute.123456789: Permission denied (publickey).", tunnel: unpinned, activeAccount: { nil })
+        expect(key.contains("“developer”") && key.contains("Linux user"))
+        let noVNC = "stdio forwarding failed\r\nRecommendation: To check for possible causes...\nERROR: (gcloud.compute.ssh) [/usr/bin/ssh] exited with return code [255]."
+        expect(ProcessPipe.explain(noVNC, tunnel: pinned, activeAccount: { nil }).contains("no desktop running on it yet"))
+        expect(ProcessPipe.explain("stdio forwarding failed", tunnel: .ssh(destination: "h", port: nil, vncPort: 5901)).contains("no VNC server is running"))
+        // SSH (non-gcloud) messages are unchanged.
+        expect(ProcessPipe.explain("Permission denied (publickey).", tunnel: .ssh(destination: "h", port: nil, vncPort: 5901)).contains("ssh h"))
+    }
+}
+
+struct GoogleCloudEngineTests {
+    func output(_ stderr: String) -> GoogleCloud.Output { GoogleCloud.Output(status: 1, stdout: "", stderr: stderr, timedOut: false) }
+
+    func testClassifiesFailuresForOneRemedyEach() {
+        func kind(_ stderr: String) -> GoogleCloud.Failure { GoogleCloud.classify(output(stderr), account: "me@example.org") }
+        expect(kind("ERROR: (gcloud.compute.instances.list) Could not fetch resource:\n - Required 'compute.instances.list' permission for 'projects/p'")
+               == .permissionDenied(permission: "compute.instances.list"))
+        expect(kind("ERROR: There was a problem refreshing your current auth tokens: ('invalid_grant: Token has been expired or revoked.')") == .signInRequired(account: "me@example.org"))
+        expect(kind("ERROR: (gcloud.auth.print-access-token) Reauthentication required.") == .signInRequired(account: "me@example.org"))
+        expect(kind("ERROR: There was a problem refreshing your current auth tokens: HTTPSConnectionPool(host='oauth2.googleapis.com'): Max retries exceeded with url: /token (Caused by NewConnectionError: nodename nor servname provided)") == .offline)  // a network failure is not an expired sign-in
+        expect(kind("ERROR: gcloud failed to load. You are running gcloud with Python 3.9, which is no longer supported by gcloud.") == .cliMissing)
+        expect(kind("ERROR: (gcloud.compute.instances.start) Could not fetch resource:\n - The zone 'projects/p/zones/us-central1-a' does not have enough resources available to fulfill the request. '(resource type:compute)'.") == .capacityUnavailable)
+        expect(kind("ZONE_RESOURCE_POOL_EXHAUSTED The zone does not have enough resources") == .capacityUnavailable)
+        if case .quotaExceeded = kind("ERROR: Quota 'NVIDIA_L4_GPUS' exceeded.  Limit: 0.0 in region us-central1.") {} else { fail("quota") }
+        if case .apiDisabled(let service) = kind("Compute Engine API has not been used in project 123 before or it is disabled. SERVICE_DISABLED compute.googleapis.com") { expect(service == "compute.googleapis.com") } else { fail("api") }
+        expect(kind("ERROR: (gcloud.compute.instances.describe) Could not fetch resource:\n - The resource 'projects/p/zones/z/instances/x' was not found") == .notFound)
+        expect(GoogleCloud.operationName("Start instance in progress for [https://www.googleapis.com/compute/v1/projects/p/zones/z/operations/operation-1730-abc-def].") == "operation-1730-abc-def")
+        expect(GoogleCloud.operationName("[{\"name\": \"operation-99-x\"}]") == "operation-99-x")
+    }
+
+    func testMetadataSuggestsUsersWithoutGuessing() {
+        let key = "ssh-rsa AAAAB3mine me@mac"
+        let users = GoogleCloud.suggestedUsers(metadata: [("workstation-user", "developer"), ("ssh-keys", "alice:ssh-ed25519 AAAAother alice\nbob:ssh-rsa AAAAB3mine bob"),
+                                                          ("startup-script", "rm -rf /"), ("workstation-user", "../etc")], localKey: key)
+        expect(users == ["developer", "bob", "alice"])  // Explicit hint, then the owner of this Mac's key, then others; invalid names dropped
+        let parsed = try? GoogleCloud.parseInstances(#"[{"id":"42","name":"vm","zone":"https://x/zones/us-east4-a","status":"TERMINATED","machineType":"https://x/machineTypes/g2-standard-8","guestAccelerators":[{"acceleratorType":"https://x/acceleratorTypes/nvidia-l4","acceleratorCount":1}],"metadata":{"items":[{"key":"enable-oslogin","value":"TRUE"}]}}]"#)
+        expect(parsed?.first?.gpu == "NVIDIA L4" && parsed?.first?.zone == "us-east4-a" && parsed?.first?.osLogin == true && parsed?.first?.canStart == true)
+        expect(parsed?.first?.hostKeyAlias(project: "p") == "circe-gce-42")
+        expect(GoogleCloud.Instance(id: nil, name: "vm", zone: "z", status: "RUNNING", machineType: "", gpu: nil, hasExternalIP: false, suggestedUsers: [], osLogin: nil)
+               .hostKeyAlias(project: "p") == "circe-gce-p-z-vm")
+    }
+
+    func testIAPTransportIsPinnedAndIgnoresUserConfig() throws {
+        let tunnel = RFBTunnel.iap(instance: "vm", zone: "us-east4-a", project: "p", account: "me@example.org", user: "developer", hostKeyAlias: "circe-gce-42", vncPort: 5900)
+        let (exe, args) = try tunnel.streamCommand()
+        expect(exe.path == "/usr/bin/ssh" && args.prefix(2) == ["-F", "/dev/null"])  // The user's ssh config must not apply
+        let proxy = args.first { $0.hasPrefix("ProxyCommand=") } ?? ""
+        expect(proxy.contains("'start-iap-tunnel'") && proxy.contains("'--account=me@example.org'") && proxy.contains("'--project=p'") && proxy.contains("'--zone=us-east4-a'"))
+        let knownHosts = args.first { $0.hasPrefix("UserKnownHostsFile=") } ?? ""
+        expect(knownHosts.hasPrefix("UserKnownHostsFile=\"") && knownHosts.hasSuffix("known_hosts\""))  // Quoted: Application Support has a space
+        expect(args.contains("HostKeyAlias=circe-gce-42") && args.contains("IdentitiesOnly=yes") && args.suffix(3) == ["-W", "localhost:5900", "circe-gce-42"])
+        expect(args.contains("-l") && args[args.firstIndex(of: "-l")! + 1] == "developer")
+        expect(tunnel.keychainAccount == RFBTunnel.gcloud(instance: "vm", zone: "us-east4-a", project: "p", useIAP: true, vncPort: 5900).keychainAccount)  // saved VNC passwords carry over
+        let remote = try tunnel.remoteCommand("id -un")
+        expect(remote?.1.suffix(3) == ["-T", "circe-gce-42", "exec /bin/sh -c 'id -un'"])  // POSIX sh whatever the login shell
+        // The wrapped command means exactly what it says once a shell runs it (quotes, $, and all).
+        let tricky = #"printf '%s|' "it's" '$HOME' "a b""#
+        let shell = Process(); shell.executableURL = URL(fileURLWithPath: "/bin/sh"); shell.arguments = ["-c", RFBTunnel.posix(tricky)]
+        let out = Pipe(); shell.standardOutput = out; try shell.run(); shell.waitUntilExit()
+        expect(String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == "it's|$HOME|a b|")
+        let start = LinuxSetup.desktopStartCommand(port: 5901)
+        expect(start.contains("/dev/tcp/127.0.0.1/5901") && start.contains("echo CIRCE_DESKTOP_READY; exec cat >/dev/null"))
+        let quoted = try IAPSSH.proxyCommand(instance: "vm", zone: "z", project: "p", account: "a@b.c")
+        expect(!quoted.contains("%") || quoted.contains("%%"))  // ssh %-tokens are escaped
+    }
+
+    func testProbeDecodingKeepsOnlyRealDesktops() throws {
+        let json = #"{"user":"developer","os":{"id":"omarchy","like":"arch","name":"Omarchy"},"packageManager":"pacman","sudo":"password","adminGroup":true,"systemd":true,"ffmpeg":true,"circe":{"installed":false,"display":null,"running":false},"vnc":[{"port":5900,"display":0,"address":"127.0.0.1","loopback":true,"rfb":true,"process":"wayvnc"},{"port":5905,"display":5,"address":"0.0.0.0","loopback":false,"rfb":true,"process":"x11vnc"},{"port":5910,"display":10,"address":"127.0.0.1","loopback":true,"rfb":false,"process":"other"}],"sessions":["Hyprland"]}"#
+        let probe = try JSONDecoder().decode(LinuxSetup.Probe.self, from: Data(json.utf8))
+        expect(probe.existingDesktops.map(\.port) == [5900])  // Public listeners and non-VNC ports aren't offered
+        expect(probe.canInstall && probe.needsSudoPassword)
+        expect(probe.systemDesktop == nil && probe.circe.current == nil && probe.circe.shared == nil)  // older scripts
+        let gnome = #"{"user":"u","os":{"id":"ubuntu","like":"debian","name":"Ubuntu"},"packageManager":"apt","sudo":"password","adminGroup":true,"systemd":true,"ffmpeg":false,"circe":{"installed":true,"display":1,"running":true,"current":false,"shared":"chrome-remote-desktop"},"vnc":[],"sessions":[],"systemDesktop":{"id":"ubuntu","name":"Ubuntu"}}"#
+        let own = try JSONDecoder().decode(LinuxSetup.Probe.self, from: Data(gnome.utf8))
+        expect(own.systemDesktop?.name == "Ubuntu" && own.circe.current == false && own.circe.shared == "chrome-remote-desktop")
+        let result = try JSONDecoder().decode(LinuxSetup.Report.self, from: Data(#"{"display":1,"password":null,"audio":true,"persistent":true,"withoutAdmin":true,"sharedSession":"chrome-remote-desktop"}"#.utf8))
+        expect(result.sharedSession == "chrome-remote-desktop")
+        // Audio and microphone follow a shared session's own sound server (Chrome Remote Desktop runs one).
+        expect(VNCSession.remoteAudioCommand(display: 1).contains("circe/desktop.env") && VNCSession.remoteMicrophoneCommand.contains("circe/desktop.env"))
+        expect(VNCSession.remoteClipboardCommand(display: 3).hasSuffix("--display 3") && VNCSession.remoteClipboardCommand(display: 3).contains("exit 69"))
+        let wrapper = LinuxSetup.remoteWrapper(arguments: ["--display", "1"])
+        expect(wrapper.hasPrefix("set +x; ") && wrapper.contains("IFS= read -r p") && wrapper.contains("3<&0 </dev/null") && wrapper.contains("'--display' '1'") && !wrapper.contains("$p\" bash"))  // password line first, handed over on fd 3 only
+    }
+
+    func testInstallerRefusesUnsafeArchives() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("circe-installer-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("src/inner"), withIntermediateDirectories: true)
+        try "x".write(to: dir.appendingPathComponent("src/inner/file"), atomically: true, encoding: .utf8)
+        let tar = Process(); tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = ["-czf", dir.appendingPathComponent("evil.tar.gz").path, "-C", dir.appendingPathComponent("src/inner").path, "--options", "", "-s", ",^,../,", "file"]
+        try tar.run(); tar.waitUntilExit()
+        var refused = false
+        do { try GoogleCloudInstaller.extract(dir.appendingPathComponent("evil.tar.gz"), into: dir.appendingPathComponent("out")) } catch { refused = true }
+        expect(refused)  // Archives with ../ paths are refused
+        expect(GoogleCloudInstaller.sdk.url.absoluteString.contains(GoogleCloudInstaller.sdkVersion) && GoogleCloudInstaller.sdk.sha256.count == 64)
+        expect(GoogleCloudInstaller.python.url.absoluteString.contains("%2B") && GoogleCloudInstaller.python.sha256.count == 64)
+    }
+}
+
+struct GoogleCloudReviewTests {
+    func testSignInPageKeepsEncodingAndAddsHint() {
+        let printed = "Go to the following link in your browser:\n\n    https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=32555940559.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A8085%2F&scope=openid+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform&state=AbC&access_type=offline\n"
+        let url = GoogleCloud.signInPage(in: printed, hint: "first.last+vm@example.org")!.absoluteString
+        expect(url.hasPrefix("https://accounts.google.com/o/oauth2/auth?response_type=code&client_id=32555940559.apps.googleusercontent.com&redirect_uri=http%3A%2F%2Flocalhost%3A8085%2F&scope=openid+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform&state=AbC&access_type=offline"))
+        expect(url.hasSuffix("&login_hint=first.last%2Bvm%40example.org"))
+        expect(GoogleCloud.signInPage(in: printed, hint: nil)!.absoluteString.contains("login_hint") == false)
+        expect(GoogleCloud.signInPage(in: "https://accounts.google.com/x?login_hint=a%40b.co\n", hint: "casey@example.org")!.absoluteString == "https://accounts.google.com/x?login_hint=a%40b.co")
+        expect(GoogleCloud.signInPage(in: "https://accounts.google.com.evil.example/x\n", hint: nil) == nil)
+        expect(GoogleCloud.signInPage(in: "nothing here", hint: "alex@example.org") == nil)
+        // Output arrives in pieces: no prefix of the line may be taken for the whole link.
+        let line = printed.components(separatedBy: "\n").first { $0.contains("https://") }!.trimmingCharacters(in: .whitespaces)
+        for cut in 1..<line.count { expect(GoogleCloud.signInPage(in: String(line.prefix(cut)), hint: nil) == nil) }
+        expect(GoogleCloud.signInPage(in: line + "\n", hint: nil)?.absoluteString == line)
+    }
+
+    func testOnceIsClaimedExactlyOnceAcrossThreads() {
+        for _ in 0..<200 {
+            let once = GoogleCloud.Once(), wins = GoogleCloud.Collected()
+            DispatchQueue.concurrentPerform(iterations: 8) { _ in if once.claim() { wins.append(out: Data("x".utf8)) } }
+            expect(wins.stdout == "x")
+            expect(once.done)
+        }
+    }
+
+    func testSSHConfigLoginsAreReadNotRun() {
+        let config = """
+        Host omarchy-agent
+          HostName omarchy-agent
+          User developer
+          IdentityFile ~/.ssh/agent_machine_ed25519
+          ProxyCommand gcloud compute start-iap-tunnel %h 22 --listen-on-stdin
+        Host example-vm
+            HostName cloud-developer-workstation
+            User developer_example_org
+            IdentityFile /home/developer/.ssh/google_compute_engine
+        Host *
+          User nobody
+        Match exec "rm -rf /"
+          User evil
+        """
+        expect(GoogleCloud.sshConfigLogins(instance: "omarchy-agent", configText: config) == [.init(user: "developer", identityFile: "~/.ssh/agent_machine_ed25519")])
+        expect(GoogleCloud.sshConfigLogins(instance: "cloud-developer-workstation", configText: config).first?.user == "developer_example_org")
+        expect(GoogleCloud.sshConfigLogins(instance: "unknown", configText: config).isEmpty)  // wildcards and Match never count
+    }
+
+    func testCirceConfigurationKeepsOnlyNetworkSettings() {
+        let active = "[core]\naccount = other@example.org\nproject = wrong\ncustom_ca_certs_file = /etc/example-ca.pem\n[auth]\nimpersonate_service_account = sa@p.iam.gserviceaccount.com\naccess_token_file = /tmp/token\n[proxy]\ntype = http\naddress = proxy.example.org\nport = 3128\n[compute]\nzone = us-east1-b\n"
+        let ours = GoogleCloud.configuration(from: active)
+        expect(ours.contains("custom_ca_certs_file = /etc/example-ca.pem") && ours.contains("[proxy]") && ours.contains("address = proxy.example.org"))
+        expect(!ours.contains("account") && !ours.contains("impersonate") && !ours.contains("access_token_file") && !ours.contains("project") && !ours.contains("zone"))
+        let env = GoogleCloud.environment()
+        expect(env["CLOUDSDK_ACTIVE_CONFIG_NAME"] == GoogleCloud.configurationName && env["CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"] == nil)
+        expect(GoogleCloud.environment(circeConfiguration: false)["CLOUDSDK_ACTIVE_CONFIG_NAME"] != GoogleCloud.configurationName)
+    }
+
+    func testKeyFileAndHostKeyConflicts() throws {
+        let tunnel = RFBTunnel.iap(instance: "vm", zone: "z", project: "p", account: "alex@example.org", user: "developer", hostKeyAlias: "circe-gce-1", vncPort: 5900, identity: "~/.ssh/agent_key")
+        let args = try tunnel.streamCommand().1
+        expect(args[args.firstIndex(of: "-i")! + 1] == ("~/.ssh/agent_key" as NSString).expandingTildeInPath)
+        let proxy = args.first { $0.hasPrefix("ProxyCommand=") } ?? ""
+        expect(proxy.hasPrefix("ProxyCommand=/usr/bin/env CLOUDSDK_ACTIVE_CONFIG_NAME=circe-app "))  // works under any login shell's `exec`
+        let known = "circe-gce-1 ssh-ed25519 AAAAold\nother ssh-rsa AAAAx\n"
+        expect(IAPSSH.pinnedKeys(alias: "circe-gce-1", in: known) == ["ssh-ed25519 AAAAold"])
+        expect(!IAPSSH.agree(["ssh-rsa A", "ssh-ed25519 B"], ["ssh-rsa A", "ssh-ed25519 C"]))  // overlap can't hide a conflict
+        expect(IAPSSH.agree(["ssh-rsa A", "ssh-ed25519 B"], ["ssh-ed25519 B"]) && !IAPSSH.agree(["ssh-rsa A"], ["ssh-ed25519 B"]))
+    }
+}
+
+struct MicrophoneTests {
+    func testRemoteMicrophoneIsPrivateAndCleansUp() {
+        let c = VNCSession.remoteMicrophoneCommand
+        expect(c.contains("module-null-sink sink_name=$s") && c.contains("module-remap-source master=$s.monitor source_name=$m"))
+        expect(c.contains("prev=$(pactl get-default-source") && c.contains("pactl set-default-source \"$prev\"") && c.contains("trap cleanup EXIT"))
+        expect(c.contains("pactl unload-module") && c.contains("pacat --playback --device=\"$s\" --format=s16le --rate=48000 --channels=1"))
+        expect(!c.contains("sudo") && !c.contains("exec pacat"))  // no root; not exec'd, so the cleanup trap runs
+    }
+}
+run("MicrophoneTests.testRemoteMicrophoneIsPrivateAndCleansUp") { MicrophoneTests().testRemoteMicrophoneIsPrivateAndCleansUp() }
+runMicrophoneReviewTests()
+runSessionLifecycleTests()
+runDesktopDiscoveryTests()
+struct DesktopLeaseTests {
+    /// A fake ssh (CIRCE_SSH_PATH) that runs `body` as /bin/sh, ignoring ssh's own arguments.
+    func withFakeSSH(_ body: String, _ test: (RFBTunnel) throws -> Void) rethrows {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("circe-lease-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir); unsetenv("CIRCE_SSH_PATH") }
+        let script = dir.appendingPathComponent("ssh")
+        try? ("#!/bin/sh\n" + body + "\n").write(to: script, atomically: true, encoding: .utf8)
+        chmod(script.path, 0o755)
+        setenv("CIRCE_SSH_PATH", script.path, 1)
+        try test(.ssh(destination: "u@h", port: nil, vncPort: 5901))
+    }
+
+    func testReadyLineIsRequired() {
+        withFakeSSH("exec 1>&-; sleep 3") { tunnel in   // output ends, session still alive: not READY
+            let started = Date()
+            guard case .failure = LinuxSetup.startDesktop(tunnel: tunnel, cancel: GoogleCloud.CancelToken(), timeout: 10) else { return expect(false) }
+            expect(Date().timeIntervalSince(started) < 5)
+        }
+        withFakeSSH("echo xCIRCE_DESKTOP_READYx; exec cat >/dev/null") { tunnel in   // not the exact line
+            guard case .failure = LinuxSetup.startDesktop(tunnel: tunnel, cancel: GoogleCloud.CancelToken(), timeout: 2) else { return expect(false) }
+        }
+        withFakeSSH("echo CIRCE_DESKTOP_READY; exec cat >/dev/null") { tunnel in
+            guard case let .success(lease) = LinuxSetup.startDesktop(tunnel: tunnel, cancel: GoogleCloud.CancelToken(), timeout: 10) else { return expect(false) }
+            expect(lease.isActive)
+            lease.end()
+            let deadline = Date().addingTimeInterval(3)
+            while lease.isActive && Date() < deadline { usleep(20_000) }
+            expect(!lease.isActive)
+        }
+    }
+
+    func testCancelledWorkNeverReachesTheComputer() {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent("circe-launched-\(UUID().uuidString)")
+        withFakeSSH("touch '\(marker.path)'; echo CIRCE_DESKTOP_READY; exec cat >/dev/null") { tunnel in
+            let cancel = GoogleCloud.CancelToken(); cancel.cancel()
+            guard case .failure = LinuxSetup.startDesktop(tunnel: tunnel, cancel: cancel) else { return expect(false) }
+            usleep(300_000)
+            expect(!FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    func testLostLeaseIsReported() {
+        withFakeSSH("echo CIRCE_DESKTOP_READY; sleep 0.5; exit 0") { tunnel in
+            guard case let .success(lease) = LinuxSetup.startDesktop(tunnel: tunnel, cancel: GoogleCloud.CancelToken(), timeout: 10) else { return expect(false) }
+            let lost = DispatchSemaphore(value: 0)
+            lease.onLost { lost.signal() }
+            expect(lost.wait(timeout: .now() + 5) == .success)
+        }
+        withFakeSSH("echo CIRCE_DESKTOP_READY; exec cat >/dev/null") { tunnel in   // ending it on purpose isn't "lost"
+            guard case let .success(lease) = LinuxSetup.startDesktop(tunnel: tunnel, cancel: GoogleCloud.CancelToken(), timeout: 10) else { return expect(false) }
+            let lost = DispatchSemaphore(value: 0)
+            lease.onLost { lost.signal() }
+            lease.end()
+            expect(lost.wait(timeout: .now() + 1.5) == .timedOut)
+        }
+    }
+}
+run("DesktopLeaseTests.testReadyLineIsRequired") { DesktopLeaseTests().testReadyLineIsRequired() }
+run("DesktopLeaseTests.testCancelledWorkNeverReachesTheComputer") { DesktopLeaseTests().testCancelledWorkNeverReachesTheComputer() }
+run("DesktopLeaseTests.testLostLeaseIsReported") { DesktopLeaseTests().testLostLeaseIsReported() }
+run("MicrophoneTests.testRemoteCommandsFindPrivateTools") {
+    // Desktops set up without administrator access keep pactl/parec/pacat in Circe's private folder.
+    for c in [VNCSession.remoteAudioCommand(display: 1), VNCSession.remoteMicrophoneCommand] {
+        expect(c.hasPrefix("[ -r \"$HOME/.config/circe/prefix.env\" ] && . \"$HOME/.config/circe/prefix.env\";"))
+    }
+}
+run("GoogleCloudReviewTests.testSSHConfigLoginsAreReadNotRun") { GoogleCloudReviewTests().testSSHConfigLoginsAreReadNotRun() }
+run("GoogleCloudReviewTests.testCirceConfigurationKeepsOnlyNetworkSettings") { GoogleCloudReviewTests().testCirceConfigurationKeepsOnlyNetworkSettings() }
+run("GoogleCloudReviewTests.testKeyFileAndHostKeyConflicts") { try GoogleCloudReviewTests().testKeyFileAndHostKeyConflicts() }
+run("GoogleCloudReviewTests.testSignInPageKeepsEncodingAndAddsHint") { GoogleCloudReviewTests().testSignInPageKeepsEncodingAndAddsHint() }
+run("GoogleCloudReviewTests.testOnceIsClaimedExactlyOnceAcrossThreads") { GoogleCloudReviewTests().testOnceIsClaimedExactlyOnceAcrossThreads() }
+run("GoogleCloudEngineTests.testClassifiesFailuresForOneRemedyEach") { GoogleCloudEngineTests().testClassifiesFailuresForOneRemedyEach() }
+run("GoogleCloudEngineTests.testMetadataSuggestsUsersWithoutGuessing") { GoogleCloudEngineTests().testMetadataSuggestsUsersWithoutGuessing() }
+run("GoogleCloudEngineTests.testIAPTransportIsPinnedAndIgnoresUserConfig") { try GoogleCloudEngineTests().testIAPTransportIsPinnedAndIgnoresUserConfig() }
+run("GoogleCloudEngineTests.testProbeDecodingKeepsOnlyRealDesktops") { try GoogleCloudEngineTests().testProbeDecodingKeepsOnlyRealDesktops() }
+run("GoogleCloudEngineTests.testInstallerRefusesUnsafeArchives") { try GoogleCloudEngineTests().testInstallerRefusesUnsafeArchives() }
+run("GCloudTests.testSSHArgumentsPinAccountAndUser") { GCloudTests().testSSHArgumentsPinAccountAndUser() }
+run("GCloudTests.testActiveAccountReadsGCloudConfiguration") { try GCloudTests().testActiveAccountReadsGCloudConfiguration() }
+run("GCloudTests.testExplainsWrongAccountAndUser") { GCloudTests().testExplainsWrongAccountAndUser() }
 run("WireTests.testInputEventsRoundTrip") { try WireTests().testInputEventsRoundTrip() }
 run("WireTests.testVideoFrameRoundTrip") { try WireTests().testVideoFrameRoundTrip() }
 run("WireTests.testControlMessagesRoundTrip") { try WireTests().testControlMessagesRoundTrip() }

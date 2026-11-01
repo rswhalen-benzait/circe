@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Run as the desktop account. Stream stdout is FLV; diagnostics belong on stderr.
 main() {
+# Tools installed by Circe without administrator access live in a private prefix.
+# shellcheck disable=SC1091
+[[ -r "$HOME/.config/circe/prefix.env" ]] && source "$HOME/.config/circe/prefix.env"
 set -euo pipefail
 export LC_ALL=C
 umask 077
@@ -88,6 +91,14 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 0' HUP INT TERM
 RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+# Circe's desktop may be showing a session that was already open (Chrome Remote Desktop, RDP): capture that one.
+if [[ -r "$RUNTIME/circe/desktop.env" && -r "$HOME/.config/circe/host.conf" ]] && grep -qx "DISPLAY_NUMBER=$DISPLAY_NUMBER" "$HOME/.config/circe/host.conf"; then
+    SHARED="$(bash -c 'source "$1"; [[ "${CIRCE_SHARED_DISPLAY:-}" =~ ^[0-9]{1,2}$ ]] && printf "%s\n%s" "$CIRCE_SHARED_DISPLAY" "${CIRCE_SHARED_XAUTHORITY:-}"' _ "$RUNTIME/circe/desktop.env" 2>/dev/null || true)"
+    if [[ -n "$SHARED" ]]; then
+        DISPLAY_NUMBER="${SHARED%%$'\n'*}"
+        if [[ "$SHARED" == *$'\n'?* ]]; then export XAUTHORITY="${SHARED#*$'\n'}"; fi
+    fi
+fi
 if [[ -z "${XAUTHORITY:-}" && -r "$RUNTIME/circe-Xauthority" ]]; then export XAUTHORITY="$RUNTIME/circe-Xauthority"; fi
 X_DISPLAY=":$DISPLAY_NUMBER.0"
 if ! INFO="$(timeout 5 xdpyinfo -display "$X_DISPLAY" 2>"$WORK/display-error")"; then

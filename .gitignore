@@ -3,3 +3,9 @@ build/
 .swiftpm/
 *.xcodeproj/xcuserdata/
 .DS_Store
+
+__pycache__/
+
+*.py[cod]
+
+scripts/test/fakehome/Library/

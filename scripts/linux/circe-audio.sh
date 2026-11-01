@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Run as the desktop account. Ogg/Opus on stdout; all diagnostics on stderr.
 main() {
+# Tools installed by Circe without administrator access live in a private prefix.
+# shellcheck disable=SC1091
+[[ -r "$HOME/.config/circe/prefix.env" ]] && source "$HOME/.config/circe/prefix.env"
 set -euo pipefail
 export LC_ALL=C
 umask 077
@@ -81,13 +84,16 @@ if ! timeout 5 ffmpeg -nostdin -hide_banner -loglevel error -f lavfi -i anullsrc
     cat "$WORK/probe-error" >&2
     failure 69 encoder_unavailable 'Opus could not encode a packet; using PCM instead.'
 fi
+# Circe passes circe.monitor for its own desktop; anything else records the default output.
+DEVICE="${CIRCE_AUDIO_DEVICE:-@DEFAULT_MONITOR@}"
+[[ "$DEVICE" =~ ^(@DEFAULT_MONITOR@|[A-Za-z0-9_.-]{1,128})$ ]] || failure 64 invalid_arguments 'Invalid audio device.'
 CONFIG="{\"version\":1,\"codec\":\"opus\",\"container\":\"ogg\",\"sampleRate\":48000,\"channels\":2,\"frameSamples\":480,\"frameDurationMs\":10,\"pageDurationMs\":20,\"bitrateKbps\":$BITRATE}"
 if $CHECK; then printf '%s\n' "$CONFIG"; exit 0; fi
 printf 'CIRCE_AUDIO_CONFIG %s\n' "$CONFIG" >&2
 # 1920 bytes is 10 ms of s16 stereo. The audio server may negotiate a larger
 # fragment; this is a request, not an end-to-end latency guarantee.
 ffmpeg -nostdin -hide_banner -loglevel warning -thread_queue_size 2 \
-    -probesize 32 -analyzeduration 1 -f pulse -sample_rate 48000 -channels 2 -fragment_size 1920 -i @DEFAULT_MONITOR@ \
+    -probesize 32 -analyzeduration 1 -f pulse -sample_rate 48000 -channels 2 -fragment_size 1920 -i "$DEVICE" \
     -map 0:a:0 -vn -sn -dn "${OPUS_ARGS[@]}" \
     -f ogg -page_duration 20000 -flush_packets 1 pipe:1 </dev/null &
 CHILD_PID=$!

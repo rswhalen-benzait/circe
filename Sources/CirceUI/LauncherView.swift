@@ -8,7 +8,7 @@ public struct LauncherView: View {
     @Environment(\.openSettings) private var openSettings
     @CirceViewState<String> private var address = ""
     @CirceViewState<String?> private var addressError = nil
-    private enum Sheet: String, Identifiable { case welcome, sharing, addComputer; var id: Self { self } }
+    private enum Sheet: String, Identifiable { case welcome, sharing, addComputer, googleCloud; var id: Self { self } }
     @CirceViewState<SavedComputer?> private var editingComputer: SavedComputer? = nil
     @CirceViewState<Sheet?> private var sheet = nil
     @CirceViewState<Bool> private var shareAfterWelcome = false
@@ -50,6 +50,9 @@ public struct LauncherView: View {
                 }
             case .sharing: HostingSetupView(model: model)
             case .addComputer: AddComputerView(model: model)
+            case .googleCloud:
+                if let services = model.cloudServices { GoogleCloudSetupView(model: model, services: services) }
+                else { Text("Google Cloud setup isn’t available in this build.").padding(40) }
             }
         }
         .sheet(item: $editingComputer) { AddComputerView(model: model, computer: $0) }
@@ -69,7 +72,12 @@ public struct LauncherView: View {
             CirceMark(size: 31)
             Text("Circe").font(.system(size: 20, weight: .semibold, design: .serif)).tracking(-0.5)
             Spacer()
-            Button { sheet = .addComputer } label: { Label("Add a computer", systemImage: "plus") }.buttonStyle(QuietButtonStyle())
+            Menu {
+                Button("Google Cloud computer…") { sheet = .googleCloud }
+                Button("Other Linux computer (SSH)…") { sheet = .addComputer }
+            } label: { Label("Add a computer", systemImage: "plus") }
+                .menuStyle(.button).buttonStyle(QuietButtonStyle()).menuIndicator(.hidden).fixedSize()
+                .accessibilityLabel("Add a computer")
             Button { openSettings() } label: { Image(systemName: "slider.horizontal.3").font(.system(size: 15)).frame(width: 30, height: 30) }
                 .buttonStyle(.plain).foregroundStyle(CirceStyle.secondaryInk).help("Settings…").accessibilityLabel("Open settings")
         }.padding(.horizontal, 32).padding(.top, 18).padding(.bottom, 12)
@@ -85,6 +93,21 @@ public struct LauncherView: View {
     }
 
     @ViewBuilder private var savedComputers: some View {
+        if model.computers.isEmpty {
+            Button { sheet = .googleCloud } label: {
+                HStack(spacing: 13) {
+                    Image(systemName: "cloud").font(.system(size: 24, weight: .ultraLight)).foregroundStyle(CirceStyle.violet).frame(width: 35)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Set up a Google Cloud computer").font(.system(size: 13, weight: .semibold))
+                        Text("Sign in with Google, pick your computer, and Circe does the rest.").font(.system(size: 11)).foregroundStyle(CirceStyle.secondaryInk)
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.right").font(.system(size: 12)).foregroundStyle(CirceStyle.violet)
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(CirceStyle.violetWash, in: RoundedRectangle(cornerRadius: 13))
+                    .contentShape(RoundedRectangle(cornerRadius: 13))
+            }.buttonStyle(FocusOutlineButtonStyle(cornerRadius: 13)).accessibilityLabel("Set up a Google Cloud computer")
+        }
         if !model.computers.isEmpty {
             VStack(alignment: .leading, spacing: 11) {
                 SectionEyebrow(title: "Saved computers")

@@ -95,7 +95,7 @@ final class RFBStream: @unchecked Sendable {
     /// Why the stream ended, in words — includes ssh/gcloud diagnostics for tunnels.
     func closeReason() -> String? {
         guard let pipe else { return nil }
-        let err = pipe.errorOutput
+        let err = pipe.settledErrorOutput()
         return err.isEmpty ? nil : ProcessPipe.explain(err, tunnel: tunnel)
     }
 

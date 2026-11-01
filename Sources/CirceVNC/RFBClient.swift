@@ -5,10 +5,12 @@ import Network
 
 /// RFB 3.8 protocol engine. Runs its read loop on a dedicated thread; delegates hop to main.
 final class RFBClient: @unchecked Sendable {
-    struct Credentials { var username: String; var password: String }
+    struct Credentials: Equatable { var username: String; var password: String }
 
     enum Event {
         case needsCredentials(usernameRequired: Bool, error: String?)
+        case credentialsAccepted(Credentials)
+        case credentialsRejected(Credentials)
         case connected(name: String, width: Int, height: Int, isApple: Bool)
         /// The server can resize its desktop on request (ExtendedDesktopSize).
         case canResizeDesktop
@@ -28,6 +30,7 @@ final class RFBClient: @unchecked Sendable {
     private var thread: Thread?
     private let credentialLock = NSCondition()
     private var pendingCredentials: Credentials?
+    private var attemptedCredentials: Credentials?
     private var cancelled = false
     private(set) var isApple = false
     private(set) var bytesIn: UInt64 = 0
@@ -86,7 +89,7 @@ final class RFBClient: @unchecked Sendable {
     }
 
     private func waitForCredentials(usernameRequired: Bool, error: String?) throws -> Credentials {
-        if error == nil, let c = initialCredentials { initialCredentials = nil; return c }
+        if error == nil, let c = initialCredentials { initialCredentials = nil; attemptedCredentials = c; return c }
         onEvent(.needsCredentials(usernameRequired: usernameRequired, error: error))
         credentialLock.lock()
         defer { credentialLock.unlock() }
@@ -94,6 +97,7 @@ final class RFBClient: @unchecked Sendable {
         if cancelled { throw RFBError.closed }
         let c = pendingCredentials!
         pendingCredentials = nil
+        attemptedCredentials = c
         return c
     }
 
@@ -171,11 +175,15 @@ final class RFBClient: @unchecked Sendable {
         if chosen != 1 || useMinor >= 8 {
             let result = try stream.u32()
             if result != 0 {
+                // Only a SecurityResult rejecting a response proves these credentials failed.
+                // EOF, tunnel failures and a pre-auth server refusal must never erase a saved password.
+                if let attemptedCredentials { onEvent(.credentialsRejected(attemptedCredentials)) }
                 lastError = useMinor >= 8 ? (try? reason()) : nil
                 throw RFBError.authFailed(lastError.map { "Authentication failed: \($0)" } ?? "Incorrect name or password.")
             }
         }
 
+        if let attemptedCredentials { onEvent(.credentialsAccepted(attemptedCredentials)) }
         stream.write(Data([1])) // ClientInit: shared session, don't kick other viewers
         let w = Int(try stream.u16()), h = Int(try stream.u16())
         try stream.skip(16) // server pixel format; we set our own

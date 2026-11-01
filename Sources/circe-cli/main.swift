@@ -122,7 +122,7 @@ func runConnect() {
 
 @MainActor var vncRef: VNCSession?
 
-/// circe-cli vnc <address> | --ssh user@host [--ssh-port N] | --gcloud INSTANCE --zone Z [--project P] [--no-iap]
+/// circe-cli vnc <address> | --ssh user@host [--ssh-port N] | --gcloud INSTANCE --zone Z [--project P] [--account A] [--ssh-user U] [--no-iap]
 ///   [--display N] [--seconds N] [--user U --password P] [--expect x,y=0xRRGGBB ...] [--tolerance N]
 ///   [--resize WxH] [--expect-clipboard TEXT] [--expect-audio] [--expect-audio-encoding pcm16|opus] [--expect-video] [--no-video]
 @MainActor
@@ -132,9 +132,16 @@ func runVNC() {
     if let dest = value("--ssh") {
         let t = RFBTunnel.ssh(destination: dest, port: value("--ssh-port").flatMap(Int.init), vncPort: RFBTunnel.vncPort(display: display))
         session = VNCSession(tunnel: t, name: dest)
+    } else if let inst = value("--gcloud"), let zone = value("--zone"), let alias = value("--iap-alias") {
+        guard let project = value("--project"), let account = value("--account"), let user = value("--ssh-user") else {
+            log("--iap-alias needs --project, --account and --ssh-user"); exit(2)
+        }
+        let t = RFBTunnel.iap(instance: inst, zone: zone, project: project, account: account, user: user, hostKeyAlias: alias,
+                              vncPort: RFBTunnel.vncPort(display: display))
+        session = VNCSession(tunnel: t, name: inst)
     } else if let inst = value("--gcloud"), let zone = value("--zone") {
         let t = RFBTunnel.gcloud(instance: inst, zone: zone, project: value("--project"), useIAP: !args.contains("--no-iap"),
-                                 vncPort: RFBTunnel.vncPort(display: display))
+                                 vncPort: RFBTunnel.vncPort(display: display), account: value("--account"), user: value("--ssh-user"))
         session = VNCSession(tunnel: t, name: inst)
     } else if args.count >= 2, let s = VNCSession(address: args[1]) {
         session = s
@@ -160,7 +167,18 @@ func runVNC() {
                     guard let pw = value("--password") else { log("server requires credentials (username needed: \(session.needsUsername))"); exit(3) }
                     session.submitPassword(username: value("--user") ?? NSUserName(), password: pw)
                 }
-                if case .streaming = session.state, start == nil { start = Date() }
+                if case .streaming = session.state, start == nil {
+                    start = Date()
+                    // --type TEXT: after the desktop settles, click the middle of the screen and type TEXT + Return.
+                    if let text = value("--type") {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            MainActor.assumeIsolated {
+                                session.typeForTesting(text, clickAt: (800, 500))
+                                log("typed \(text.count) characters")
+                            }
+                        }
+                    }
+                }
                 if case .disconnected(let r) = session.state { log("disconnected: \(r ?? "-")"); exit(4) }
             }
             guard let start else { return }
@@ -170,6 +188,7 @@ func runVNC() {
                 session.requestDesktopSize(width: wh[0], height: wh[1])
             }
             guard Date().timeIntervalSince(start) >= seconds else { return }
+            if let path = value("--snapshot"), let png = session.snapshotPNG() { try? png.write(to: URL(fileURLWithPath: path)) }
             var bad = 0
             var i = 0
             while i < args.count {
@@ -213,7 +232,7 @@ func runVNC() {
     vncRef = session
 }
 
-/// circe-cli linux-setup --ssh user@host | --gcloud INSTANCE --zone Z  SCRIPT [-- script args]
+/// circe-cli linux-setup --ssh user@host | --gcloud INSTANCE --zone Z [--project P] [--account A] [--ssh-user U]  SCRIPT [-- script args]
 @MainActor
 func runLinuxSetup() {
     let display = value("--display").flatMap(Int.init) ?? 1
@@ -222,7 +241,7 @@ func runLinuxSetup() {
         tunnel = .ssh(destination: dest, port: value("--ssh-port").flatMap(Int.init), vncPort: RFBTunnel.vncPort(display: display))
     } else if let inst = value("--gcloud"), let zone = value("--zone") {
         tunnel = .gcloud(instance: inst, zone: zone, project: value("--project"), useIAP: !args.contains("--no-iap"),
-                         vncPort: RFBTunnel.vncPort(display: display))
+                         vncPort: RFBTunnel.vncPort(display: display), account: value("--account"), user: value("--ssh-user"))
     } else { log("usage: circe-cli linux-setup --ssh user@host SCRIPT"); exit(2) }
     guard let path = value("--script"), let script = FileManager.default.contents(atPath: path) else { log("--script PATH required"); exit(2) }
     let extra = args.firstIndex(of: "--").map { Array(args[($0 + 1)...]) } ?? []
@@ -230,6 +249,29 @@ func runLinuxSetup() {
         switch result {
         case .success(let r): log("RESULT display=\(r.display) password=\(r.password == nil ? "none" : "<received>") audio=\(r.audio ?? false)"); exit(0)
         case .failure(let e): log("FAILED: \(e)"); exit(7)
+        }
+    }
+}
+
+/// circe-cli linux-desktop --ssh user@host [--ssh-port N] [--display N] [--hold SECONDS]
+/// Starts a desktop set up without lingering and holds its session (as the app does while connected).
+@MainActor
+func runLinuxDesktop() {
+    let display = value("--display").flatMap(Int.init) ?? 1
+    guard let dest = value("--ssh") else { log("usage: circe-cli linux-desktop --ssh user@host [--hold SECONDS]"); exit(2) }
+    let tunnel = RFBTunnel.ssh(destination: dest, port: value("--ssh-port").flatMap(Int.init), vncPort: RFBTunnel.vncPort(display: display))
+    let hold = value("--hold").flatMap(Double.init) ?? 0
+    DispatchQueue.global().async {
+        let started = Date()
+        switch LinuxSetup.startDesktop(tunnel: tunnel, cancel: GoogleCloud.CancelToken()) {
+        case .success(let lease):
+            log(String(format: "RESULT desktop ready in %.1fs; holding %.0fs", Date().timeIntervalSince(started), hold))
+            Thread.sleep(forTimeInterval: hold)
+            log("lease active before end: \(lease.isActive)")
+            lease.end()
+            exit(0)
+        case .failure(let failure):
+            log("FAILED: \(failure)"); exit(7)
         }
     }
 }
@@ -250,6 +292,64 @@ enum ScreenCaptureKitProbe {
     }
 }
 
+/// circe-cli gcp accounts | credential EMAIL | projects EMAIL | instances EMAIL PROJECT
+///              | describe EMAIL PROJECT ZONE NAME | tunnel EMAIL PROJECT ZONE NAME
+///              | probe EMAIL PROJECT ZONE NAME --script PATH [--ssh-user U]   (all read-only)
+func runGCP() -> Never {
+    let rest = Array(args.dropFirst(2))
+    func show<T: Encodable>(_ value: T) {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        print(String(decoding: (try? encoder.encode(value)) ?? Data(), as: UTF8.self))
+    }
+    do {
+        switch (args.dropFirst().first, rest.count) {
+        case ("accounts", _): show(try GoogleCloud.accounts())
+        case ("install", _):
+            try GoogleCloudInstaller.install(cancel: GoogleCloud.CancelToken()) { log($0) }
+            print(GoogleCloudInstaller.managedGCloud?.path ?? "not installed")
+        case ("which", _): print((try? GoogleCloud.executableURL().path) ?? "none")
+        case ("credential", 1...): print(try GoogleCloud.credential(for: rest[0]))
+        case ("signin", 1...):
+            // The app's "Use a code instead" flow: prints Google's page, then reads the code from a file when it appears.
+            let channel = GoogleCloud.SignInChannel(), cancel = GoogleCloud.CancelToken()
+            let codeFile = value("--code-file") ?? "/tmp/circe-signin-code"
+            try? FileManager.default.removeItem(atPath: codeFile)
+            DispatchQueue.global().async {
+                while true {
+                    if let code = try? String(contentsOfFile: codeFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !code.isEmpty {
+                        channel.submit(code); try? FileManager.default.removeItem(atPath: codeFile); return
+                    }
+                    usleep(300_000)
+                }
+            }
+            let who = try GoogleCloud.signIn(hint: rest[0], useCode: args.contains("--code"), cancel: cancel, channel: channel) { event in
+                switch event { case .page(let url): log("PAGE \(url.absoluteString)"); case .needsCode: log("NEEDS_CODE (write it to \(codeFile))") }
+            }
+            print("signed in as \(who)")
+        case ("projects", 1...): show(try GoogleCloud.projects(account: rest[0]))
+        case ("instances", 2...): show(try GoogleCloud.instances(account: rest[0], project: rest[1]))
+        case ("describe", 4...): show(try GoogleCloud.instance(account: rest[0], project: rest[1], zone: rest[2], name: rest[3]))
+        case ("tunnel", 4...): print(try GoogleCloud.checkTunnel(account: rest[0], project: rest[1], zone: rest[2], instance: rest[3]))
+        case ("oslogin", 2...): print(GoogleCloud.osLoginUsername(account: rest[0], project: rest[1]) ?? "none")
+        case ("verify", 6...):
+            print(GoogleCloud.verifyLogin(.iap(instance: rest[3], zone: rest[2], project: rest[1], account: rest[0], user: rest[4], hostKeyAlias: rest[5], vncPort: 5901)))
+        case ("probe", 4...):
+            guard let path = value("--script"), let script = FileManager.default.contents(atPath: path) else { log("--script PATH required"); exit(2) }
+            // Read-only route: ssh over IAP with an existing key (gcloud compute ssh could publish keys).
+            guard let user = value("--ssh-user"), let alias = value("--iap-alias") else { log("probe needs --ssh-user and --iap-alias"); exit(2) }
+            let tunnel = RFBTunnel.iap(instance: rest[3], zone: rest[2], project: rest[1], account: rest[0], user: user, hostKeyAlias: alias, vncPort: 5901)
+            nonisolated(unsafe) var outcome: Result<LinuxSetup.Probe, LinuxSetup.Failure>?
+            LinuxSetup.probe(tunnel: tunnel, script: script) { outcome = $0 }
+            while outcome == nil { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1)) }
+            switch outcome! { case .success(let probe): show(probe); case .failure(let failure): log("error: \(failure)"); exit(1) }
+        default: log("usage: circe-cli gcp accounts | credential EMAIL | projects EMAIL | instances EMAIL PROJECT | describe|tunnel EMAIL PROJECT ZONE NAME"); exit(2)
+        }
+        exit(0)
+    } catch { log("error: \(error)"); exit(1) }
+}
+
+if args.first == "gcp" { runGCP() }
+
 let app = NSApplication.shared
 app.setActivationPolicy(args.contains("--window") ? .regular : .accessory)
 MainActor.assumeIsolated {
@@ -259,6 +359,16 @@ MainActor.assumeIsolated {
     case "displays": runDisplays()
     case "vnc": runVNC()
     case "linux-setup": runLinuxSetup()
+    case "linux-desktop": runLinuxDesktop()
+    case "remote-command":
+        // The exact remote command Circe runs over SSH (already wrapped for /bin/sh), for tests and support.
+        switch args.dropFirst().first {
+        case "mic": print(RFBTunnel.posix(VNCSession.remoteMicrophoneCommand), terminator: "")
+        case "audio": print(RFBTunnel.posix(VNCSession.remoteAudioCommand(display: value("--display").flatMap(Int.init) ?? 1)), terminator: "")
+        case "desktop": print(RFBTunnel.posix(LinuxSetup.desktopStartCommand(port: 5900 + (value("--display").flatMap(Int.init) ?? 1))), terminator: "")
+        default: log("usage: circe-cli remote-command mic|audio|desktop [--display N]"); exit(2)
+        }
+        exit(0)
     default:
         log("usage: circe-cli host [--open] [--port N] | connect <address> [--seconds N] [--pin CODE] [--window]")
         exit(2)

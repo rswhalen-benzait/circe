@@ -5,7 +5,7 @@ public struct SessionView: View {
     @ObservedObject private var session: RemoteSession
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private enum Control: Hashable { case fullScreen, scale, options, disconnect, allow, dismissHint }
+    private enum Control: Hashable { case fullScreen, scale, microphone, options, disconnect, allow, dismissHint }
     @FocusState private var focusedControl: Control?
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
@@ -18,6 +18,9 @@ public struct SessionView: View {
     public var body: some View {
         ZStack(alignment: .top) {
             CirceStyle.canvas
+            if session.notice != nil {
+                connecting
+            } else {
             switch session.phase {
             case .connecting: connecting
             case .pairing: PairingView(session: session)
@@ -42,9 +45,14 @@ public struct SessionView: View {
                     toolbar.opacity(toolbarVisible ? 1 : 0)
                         .offset(y: toolbarVisible ? 0 : -12).allowsHitTesting(toolbarVisible).disabled(!toolbarVisible).accessibilityHidden(!toolbarVisible)
                         .onHover { hoveringToolbar = $0; if $0 { revealToolbar() } else { scheduleHide() } }
+                    // This status and its Stop action stay visible when the toolbar fades away.
+                    if session.microphoneAvailable && session.microphoneEnabled && session.phase == .streaming {
+                        microphoneStatus.padding(.horizontal, 16)
+                    }
                     if session.showAccessibilityHint { accessibilityHint.padding(.horizontal, 16) }
                 }.padding(.top, 12).animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: toolbarVisible)
             case .disconnected(let reason): if let reason { disconnected(reason) } else { Color.clear }
+            }
             }
         }.frame(minWidth: 400, minHeight: 320).ignoresSafeArea()
             .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: session.isDraggingFiles)
@@ -67,6 +75,8 @@ public struct SessionView: View {
             .onChange(of: focusedControl) { _, control in if control != nil { revealToolbar() } else { scheduleHide() } }
             .onChange(of: toolbarVisible) { _, _ in updateTrafficLights() }
             .onChange(of: session.showAccessibilityHint) { _, shown in if shown { revealToolbar() } else { scheduleHide() } }
+            .onChange(of: session.microphoneEnabled) { _, _ in revealToolbar() }
+            .onChange(of: session.microphoneProblem) { _, problem in if problem != nil { revealToolbar() } }
             .onReceive(NotificationCenter.default.publisher(for: .circeDisconnectSession)) { _ in
                 if window?.isKeyWindow == true { session.disconnect() }
             }
@@ -77,14 +87,28 @@ public struct SessionView: View {
                 if window?.isKeyWindow == true { session.releaseKeyboard(); revealToolbar() }
             }
     }
-    private var connecting: some View {
-        VStack(spacing: 18) {
-            CirceMark(size: 62)
-            ProgressView().controlSize(.small).tint(.white).accessibilityHidden(true)
-            Text("Connecting to \(session.name)").accessibilityAddTraits(.isHeader).font(.system(size: 17, weight: .medium))
-            Text("Making yourself at home.").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-            Button("Cancel") { session.disconnect() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).padding(.top, 4)
-        }.foregroundStyle(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
+    @ViewBuilder private var connecting: some View {
+        if let notice = session.notice {
+            VStack(spacing: 16) {
+                CirceMark(size: 54)
+                Text(notice.title).accessibilityAddTraits(.isHeader).font(.system(size: 19, weight: .medium)).multilineTextAlignment(.center)
+                Text(notice.message).font(.system(size: 12)).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center).frame(maxWidth: 400)
+                HStack(spacing: 10) {
+                    Button("Cancel") { session.disconnect() }.buttonStyle(QuietButtonStyle())
+                    if let title = notice.secondaryTitle, let secondary = notice.secondary { Button(title, action: secondary).buttonStyle(QuietButtonStyle()) }
+                    Button(notice.actionTitle, action: notice.action).buttonStyle(PrimaryButtonStyle()).keyboardShortcut(.defaultAction)
+                }.padding(.top, 4)
+            }.foregroundStyle(.white).padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(spacing: 18) {
+                CirceMark(size: 62)
+                ProgressView().controlSize(.small).tint(.white).accessibilityHidden(true)
+                Text("Connecting to \(session.name)").accessibilityAddTraits(.isHeader).font(.system(size: 17, weight: .medium))
+                Text(session.connectingDetail ?? "Making yourself at home.").font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
+                    .multilineTextAlignment(.center).frame(maxWidth: 380)
+                Button("Cancel") { session.disconnect() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.white.opacity(0.65)).padding(.top, 4)
+            }.foregroundStyle(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
     private func disconnected(_ reason: String) -> some View {
         VStack(spacing: 20) {
@@ -121,6 +145,15 @@ public struct SessionView: View {
             } label: { Image(systemName: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left").frame(width: 31, height: 30) }
                 .menuStyle(.borderlessButton).fixedSize().help("Display scale").accessibilityLabel("Display scale").accessibilityValue(session.scale.rawValue).focused($focusedControl, equals: .scale)
                 .disabled(!session.scaleAvailable)
+            if session.microphoneAvailable {
+                Button { session.setMicrophone(!session.microphoneEnabled) } label: {
+                    Image(systemName: session.microphoneEnabled ? "mic.fill" : "mic.slash")
+                        .font(.system(size: 12)).frame(width: 31, height: 30).contentShape(Circle())
+                }.buttonStyle(.plain)
+                    .help(session.microphoneEnabled ? "Turn off this Mac’s microphone" : "Send this Mac’s microphone to \(session.name)")
+                    .accessibilityLabel(session.microphoneEnabled ? "Turn off microphone" : "Send microphone to \(session.name)")
+                    .accessibilityValue(session.microphoneStatus).focused($focusedControl, equals: .microphone)
+            }
             Menu {
                 if session.displays.count > 1 {
                     Picker("Display", selection: Binding(get: { session.selectedDisplayID }, set: { if let id = $0 { session.selectDisplay(id) } })) {
@@ -157,6 +190,34 @@ public struct SessionView: View {
             .overlay(Capsule().strokeBorder(.white.opacity(0.14)))
             .shadow(color: .black.opacity(0.25), radius: 12, y: 5).fixedSize(horizontal: true, vertical: false)
             .help("Local shortcuts: ⌃⌥⌘F full screen · ⌃⌥⌘Esc release input · ⌃⌥⌘D disconnect · ⌃⌥⌘S stats")
+    }
+    private var microphoneStatus: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 9) {
+                if session.isSendingMicrophone {
+                    Image(systemName: "mic.fill").foregroundStyle(.orange).accessibilityHidden(true)
+                } else if session.microphoneProblem == nil {
+                    ProgressView().controlSize(.small).accessibilityHidden(true)
+                } else {
+                    Image(systemName: "mic.slash").accessibilityHidden(true)
+                }
+                Text(session.microphoneStatus).font(.system(size: 12, weight: .medium))
+                if session.microphoneProblem != nil {
+                    Button("Retry") { session.setMicrophone(true) }
+                        .buttonStyle(.bordered).controlSize(.small).accessibilityLabel("Retry microphone")
+                }
+                Button(session.isSendingMicrophone ? "Stop" : "Turn off") { session.setMicrophone(false) }
+                    .buttonStyle(.bordered).controlSize(.small).accessibilityLabel("Turn off microphone")
+            }
+            if let problem = session.microphoneProblem {
+                Text(problem).font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.padding(.horizontal, 13).padding(.vertical, 9).frame(maxWidth: 420)
+            .foregroundStyle(.white).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.2)))
+            .environment(\.colorScheme, .dark).accessibilityElement(children: .contain)
+            .accessibilityLabel(session.isSendingMicrophone ? "Sending microphone to \(session.name)" : "Microphone status")
     }
     private var accessibilityHint: some View {
         HStack(spacing: 9) {
@@ -207,7 +268,7 @@ public struct SessionView: View {
         }
     }
     private func closeIfEndedCleanly() {
-        if case .disconnected(nil) = session.phase { dismissWindow() }
+        if session.notice == nil, case .disconnected(nil) = session.phase { dismissWindow() }
     }
     private func configureWindow() {
         guard let window else { return }

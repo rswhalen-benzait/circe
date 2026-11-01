@@ -43,6 +43,8 @@ check "video that falls behind restarts at a lower bitrate" "videoLimit=3600 fps
   env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_LAG=1 $CLI vnc --ssh t@vm --display 22 --password x --seconds 6 --expect-video
 check "video still behind at lower bitrate also lowers the frame rate" "videoLimit=2160 fpsLimit=40 mismatches=0" \
   env FAKE_VIDEO_FLV="$TMP/desk.flv" FAKE_VIDEO_LAG=2 $CLI vnc --ssh t@vm --display 22 --password x --seconds 10 --expect-video
+check "a shared session's clipboard arrives through Circe's clipboard helper" "mismatches=0" \
+  env FAKE_CLIPBOARD_TEXT="Shared session ✓ $$" $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --expect-clipboard "Shared session ✓ $$"
 check "Opus audio from the audio helper" "mismatches=0" \
   env FAKE_AUDIO_OGG="$TMP/tone.ogg" $CLI vnc --ssh t@vm --display 22 --password x --seconds 2 --expect-audio --expect-audio-encoding opus
 check "no audio helper falls back to raw PCM (parec)" "mismatches=0" \

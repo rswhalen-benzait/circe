@@ -85,15 +85,33 @@ public final class CircePreferences: ObservableObject {
     }
 }
 
+/// A decision shown in the session window: one primary action, and optionally a second one.
+public struct SessionNotice {
+    public var title: String
+    public var message: String
+    public var actionTitle: String
+    public var action: () -> Void
+    public var secondaryTitle: String?
+    public var secondary: (() -> Void)?
+    public init(title: String, message: String, actionTitle: String, action: @escaping () -> Void, secondaryTitle: String? = nil, secondary: (() -> Void)? = nil) {
+        self.title = title; self.message = message; self.actionTitle = actionTitle; self.action = action
+        self.secondaryTitle = secondaryTitle; self.secondary = secondary
+    }
+}
+
 @MainActor
 public final class RemoteSession: ObservableObject, Identifiable {
     public let id = UUID()
     @Published public var name: String
     public let address: String
     @Published public var phase: ConnectionPhase = .connecting {
-        didSet { if phase != .streaming { isDraggingFiles = false } }
+        didSet { if phase != .streaming { isDraggingFiles = false; microphoneActive = false } }
     }
     @Published public var isDraggingFiles = false
+    /// What Circe is doing before the desktop appears ("Starting developer-omarchy…").
+    @Published public var connectingDetail: String?
+    /// Something the user must decide before connecting can continue (sign in, start the VM).
+    @Published public var notice: SessionNotice?
     @Published public var fps: Double = 0
     @Published public var latencyMs: Double = 0
     @Published public var bitrateMbps: Double = 0
@@ -140,6 +158,20 @@ public final class RemoteSession: ObservableObject, Identifiable {
     @Published public var scaleAvailable = false
     @Published public var clipboardAvailable = false
     @Published public var audioAvailable = false
+    @Published public var microphoneEnabled = false
+    @Published public var microphoneAvailable = false
+    /// True only after the remote microphone is ready and capture is sending audio.
+    @Published public var microphoneActive = false
+    @Published public var microphoneProblem: String?
+    public var isSendingMicrophone: Bool {
+        phase == .streaming && microphoneAvailable && microphoneEnabled && microphoneActive
+    }
+    public var microphoneStatus: String {
+        if !microphoneEnabled { return "Microphone off" }
+        if isSendingMicrophone { return "Sending microphone" }
+        if microphoneProblem != nil { return "Microphone unavailable" }
+        return "Starting microphone…"
+    }
     @Published public var qualityAvailable = false
     @Published public var keyboardReleaseAvailable = false
     @Published public var showAccessibilityHint = false
@@ -152,6 +184,7 @@ public final class RemoteSession: ObservableObject, Identifiable {
     var onMatchResolution: ((Bool) -> Void)?
     var onClipboard: ((Bool) -> Void)?
     var onAudio: ((Bool) -> Void)?
+    var onMicrophone: ((Bool) -> Void)?
     var onVideo: ((Bool) -> Void)?
     var onQuality: ((StreamQuality) -> Void)?
     var onReleaseKeyboard: (() -> Void)?
@@ -166,10 +199,14 @@ public final class RemoteSession: ObservableObject, Identifiable {
     public func submitPassword(username: String, password: String) { pinError = nil; onPassword?(username, password) }
     public func disconnect() {
         if case .disconnected = phase { return }
+        notice = nil
         onDisconnect?(); phase = .disconnected(nil)
     }
     public var canReconnect: Bool { onReconnect != nil }
-    public func reconnect() { guard let onReconnect else { return }; phase = .connecting; pinError = nil; onReconnect() }
+    public func reconnect() {
+        guard case .disconnected = phase, let onReconnect else { return }
+        phase = .connecting; pinError = nil; onReconnect()
+    }
     public func setScale(_ value: DisplayScale) {
         if value == .actual && matchesWindowResolution { setMatchesWindowResolution(false) }
         scale = value; onScale?(value)
@@ -180,6 +217,12 @@ public final class RemoteSession: ObservableObject, Identifiable {
     }
     public func setClipboard(_ value: Bool) { clipboardEnabled = value; onClipboard?(value) }
     public func setAudio(_ value: Bool) { audioEnabled = value; onAudio?(value) }
+    public func setMicrophone(_ value: Bool) {
+        microphoneEnabled = value
+        microphoneProblem = nil
+        if !value { microphoneActive = false }
+        onMicrophone?(value)
+    }
     public func setVideo(_ value: Bool) { videoEnabled = value; onVideo?(value) }
     public func setQuality(_ value: StreamQuality) { quality = value; onQuality?(value) }
     public func releaseKeyboard() { if phase == .streaming { onReleaseKeyboard?() } }
@@ -217,11 +260,33 @@ public final class CirceModel: ObservableObject {
     private let recentStore: RecentConnectionsStore
     private let computerStore: SavedComputersStore
     private var recentObservations: [UUID: AnyCancellable] = [:]
+    /// The desktop, not its saved-row UUID, owns the window and connection. The wizard may save the
+    /// same desktop again; doing so must focus its existing session rather than start another tunnel.
+    private enum ComputerSessionTarget: Hashable {
+        case googleCloud(instance: String, zone: String, project: String?, useIAP: Bool,
+                         account: String?, user: String?, hostKeyAlias: String?, display: Int)
+        case ssh(destination: String, port: Int?, display: Int)
+        init(_ computer: SavedComputer) {
+            switch computer.connection {
+            case let .googleCloud(instance, zone, project, useIAP, account, user, alias, _):
+                self = .googleCloud(instance: instance, zone: zone, project: project, useIAP: useIAP,
+                                    account: account, user: user, hostKeyAlias: alias, display: computer.display)
+            case let .ssh(destination, port): self = .ssh(destination: destination, port: port, display: computer.display)
+            }
+        }
+    }
+    private var computerSessions: [ComputerSessionTarget: UUID] = [:]
     public let computerName = Host.current().localizedName ?? "This Mac"
     var onConnect: ((NearbyMac?, String) -> RemoteSession)?
     var onConnectComputer: ((SavedComputer) -> RemoteSession)?
     var onUpdateComputer: ((SavedComputer) -> Void)?
+    /// A saved computer now points at a different machine: forget what belonged to the old one (its VNC password).
+    var onComputerReplaced: ((SavedComputer) -> Void)?
+    func computerReplaced(_ old: SavedComputer) { onComputerReplaced?(old) }
     var onSetupComputer: ((SavedComputer, @escaping (Result<SavedComputer, Error>) -> Void) -> Void)?
+    var onActiveGoogleAccount: (() -> String?)?
+    /// Google Cloud operations for the guided setup (nil in previews without the engine).
+    public var cloudServices: CloudServices?
     var onHostToggle: ((Bool) -> Void)?
     var onRefreshPermissions: (() -> Void)?
     var onRequestScreen: (() -> Void)?
@@ -255,6 +320,8 @@ public final class CirceModel: ObservableObject {
     }
     public func removeComputer(_ id: UUID) { computerStore.remove(id); computers = computerStore.computers }
     public func isSettingUp(_ id: UUID) -> Bool { computerSetups[id]?.phase == .running }
+    /// The account gcloud would use right now (nil when unknown, or in previews without the engine).
+    public func activeGoogleAccount() -> String? { onActiveGoogleAccount?() }
     public func appendSetupOutput(_ line: String, for id: UUID) {
         guard var status = computerSetups[id], status.phase == .running else { return }
         let safe = Self.redactSetupOutput(line)
@@ -291,9 +358,17 @@ public final class CirceModel: ObservableObject {
         }
     }
     @discardableResult public func connect(to computer: SavedComputer) -> RemoteSession {
+        let target = ComputerSessionTarget(computer)
+        if let id = computerSessions[target], let session = sessions[id] {
+            // A disconnected window can be brought back with the same engine and credentials. All
+            // other phases already have an operation (or a decision) in progress, so simply reuse it.
+            if case .disconnected = session.phase { session.reconnect() }
+            return session
+        }
         let session = onConnectComputer?(computer) ?? RemoteSession(name: computer.name, address: computer.detail)
         if onConnectComputer == nil { session.phase = .disconnected("Secure Linux connections are unavailable in this build.") }
         register(session)
+        computerSessions[target] = session.id
         recentObservations[session.id] = session.$phase.filter { $0 == .streaming }.prefix(1).sink { [weak self, weak session] _ in
             guard let self, let session else { return }
             self.sessionStarted(session)
@@ -330,7 +405,13 @@ public final class CirceModel: ObservableObject {
             preferences.accessibilityHintShown = true; session.showAccessibilityHint = true
         }
     }
-    public func closeSession(_ id: UUID) { sessions[id]?.disconnect(); sessions.removeValue(forKey: id); recentObservations.removeValue(forKey: id)?.cancel(); onCloseSession?(id) }
+    public func closeSession(_ id: UUID) {
+        sessions[id]?.disconnect()
+        sessions.removeValue(forKey: id)
+        computerSessions = computerSessions.filter { $0.value != id }
+        recentObservations.removeValue(forKey: id)?.cancel()
+        onCloseSession?(id)
+    }
     public func setHosting(_ enabled: Bool) { hostError = nil; preferences.shareThisMac = enabled; onHostToggle?(enabled) }
     public func refreshPermissions() { onRefreshPermissions?() }
     public func requestScreenRecording() { onRequestScreen?() }
